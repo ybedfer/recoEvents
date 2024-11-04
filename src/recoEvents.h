@@ -6,10 +6,10 @@
 
 /*
 // USAGE
-const char tag[6] = "Merge";
-TChain *events = new TChain("events"); char fName[] = "podio_output.mERGE.1234.root"; size_t lN = strlen(fName)+1; int seeds[] = {1234,4567,8910,1112}; int nSeeds = sizeof(seeds)/sizeof(int);
+const char tag[7] = "sensor";
+TChain *events = new TChain("events"); char fName[] = "podio_output.sensor.1234.root"; size_t lN = strlen(fName)+1; int seeds[] = {1234,4567,8910,1112}; int nSeeds = sizeof(seeds)/sizeof(int);
 for (int i = 0; i<nSeeds; i++) { snprintf(fName,lN,"podio_output.%s.%4d.root",tag,seeds[i]); events->Add(fName); }
-.L recoEvents.so
+.L ../recoEvents/install/librecoEvents.so
 recoEvents ana(events,0xf); // Instantiate for all of (0x1:CyMBaL,0x2:Outer,0x4:Vertex,0x8:Si)
 ana.select = new TTreeFormula("select", "@MCParticles.size()==1", events);// Add rejection cut
 ana.Loop();
@@ -94,7 +94,7 @@ public :
    const char *detectorNames[N_DETs];
 
    // ***** HISTOS
-   TTreeFormula *select; // Provides from specifying a rejection cut.
+   TTreeFormula *select; // Provides for specifying a rejection cut.
    int requireQuality; // "SimTrackerHit::quality" required for filling "simHs" and residuals
    int requireModule; // If >=0, select module "requireModule" (D=-1=All)
    void BookHistos(Histos *Hs, const char tag);
@@ -191,8 +191,6 @@ void recoEvents::Init(TTree *tree)
    // The Init() function is called when the selector needs to initialize
    // a new tree or chain. Typically here the branch addresses and branch
    // pointers of the tree will be set.
-   // It is normally not necessary to make changes to the generated
-   // code, but the routine can be extended by the user if needed.
    // Init() will be called many times when running on PROOF
    // (once per file to be processed).
 
@@ -530,6 +528,7 @@ void recoEvents::DrawphithZR(int simOrRec, unsigned int detectorPattern, bool de
     cEvents->Divide(2,2);
     gStyle->SetOptStat(10);
     TH2D *h2s[4] = { hs.phi,hs.th,hs.Z,hs.R };
+    if (idet<2) h2s[3] = hs.Rr;
     for (int ih = 0; ih<4; ih++) {
       cEvents->cd(ih+1); TH2D *h2 = h2s[ih];
       TH1D *hproj = h2->ProjectionX(); hproj->Draw();

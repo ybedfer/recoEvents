@@ -27,7 +27,7 @@ cmake_minimum_required(VERSION 3.24)
 project(recoEvents
 	DESCRIPTION "Project the events TTree of the podio_output of eicrecon")
 
-# Set version based on git
+# Set version based on git (not working as of 07/03: fatal: No names found, cannot describe anything.)
 #include(cmake/git_version.cmake)
 #set_git_version(CMAKE_PROJECT_VERSION)
 
