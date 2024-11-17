@@ -22,7 +22,7 @@ void recoEvents::Loop(int nEvents)
   //      root> t.GetEntry(12); // Fill t data members with entry number 12
   //      root> t.Show();       // Show values of entry 12
   //      root> t.Show(16);     // Read and show values of entry 16
-  //      root> t.Loop();       // Loop on all entries
+  //      root> ana.Loop();       // Loop on all entries
   //
 
   //    jentry is the global entry number in the chain
@@ -72,10 +72,11 @@ void recoEvents::Loop(int nEvents)
 
     for (int idet = 0; idet<N_DETs; idet++) {
       if (!(0x1<<idet&processingMode)) continue;
-      int nArhs = arhs[idet]->size();
-      int nAshs = ashs[idet]->size();
-      int nHits = hits[idet]->size();
-      int nRecs = recs[idet]->size();
+      // *************** LOOP ON SELECTED DETECTORS
+      int nArhs = arhs[idet]->size(); // Associations raw hit
+      int nAshs = ashs[idet]->size(); // Associations sim hit
+      int nHits = hits[idet]->size(); // Sim hits
+      int nRecs = recs[idet]->size(); // Rec hits
       if (!(nArhs||nAshs||nHits||nRecs)) continue;
       if (verbose&0x1) printf("%3d det %d: arh,ash,hit,rec %d,%d,%d,%d\n",
 			  jentry,idet,nArhs,nAshs,nHits,nRecs);
@@ -92,6 +93,7 @@ void recoEvents::Loop(int nEvents)
 	  printf("ash %d: %d 0x%x\n",ih,sIndex,cID);
 	}
       }
+      // ********** BUILD raw <-> sim MAP
       if (nAshs!=nArhs) {
 	printf("Warning: %3d det %d: ash(%d)!=arh(%d)\n",nAshs,nArhs);
       }
@@ -105,6 +107,7 @@ void recoEvents::Loop(int nEvents)
 	}
       }
       for (int ih = 0; ih<nHits; ih++) {
+	// ********** LOOP ON sim HITS
 	SimTrackerHitData &hit = hits[idet]->at(ih);
 	const Vector3d &pos = hit.position;
 	double X = pos.x, Y = pos.y, Z = pos.z;
@@ -113,28 +116,28 @@ void recoEvents::Loop(int nEvents)
 			      ih,X,Y,Z,hit.cellID>>32);
 	  continue;
 	}
-	Histos &hs = simHs[idet];
-	fillHit(idet,hs,X,Y,Z,hit.cellID);
+	fillHit(0,idet,X,Y,Z,hit.cellID);       // ***** FILL sim HISTOS
 	if (verbose&0x1) printf("hit %d: %6.1f,%6.1f,%6.1f 0x%x\n",
 			    ih,X,Y,Z,hit.cellID>>32);
 	if (verbose&0x6) printHit(idet,X,Y,Z,hit.cellID);
       }
       for (int ih = 0; ih<nRecs; ih++) {
+	// ********** LOOP ON rec HITS
 	edm4eic::TrackerHitData &rec = recs[idet]->at(ih);
 	const Vector3f &pos = rec.position;
-	double X = pos.x, Y = pos.y, Z = pos.z;
-	Histos &hs = recHs[idet];
-	fillHit(idet,hs,X,Y,Z,rec.cellID);
+	double X = pos.x, Y = pos.y, Z = pos.z;    
+	fillHit(1,idet,X,Y,Z,rec.cellID);       // ***** FILL rec HISTOS
 	if (verbose&0x1) printf("rec %d: %6.1f,%6.1f,%6.1f 0x%x\n",
 			    ih,X,Y,Z,rec.cellID>>32);
 	if (verbose&0x6) printHit(idet,X,Y,Z,rec.cellID);
+	// ********** RESIDUALS
 	map<int,int,less<int>>::const_iterator im = raw2sim.find(ih);
 	if (im==raw2sim.end()) {
 	  printf("Warning: %3d det %d: raw %s not associated\n",
 		 jentry,idet,ih);
 	}
 	else {
-	  int sIndex = im->second;
+	  int sIndex = im->second; // ***** REFERENCE TO sim HIT
 	  if (sIndex<0 || nHits<=sIndex) {
 	    printf("Warning: %3d det %d: raw %s <-> sim %d\n",
 		   jentry,idet,ih,sIndex);
@@ -143,7 +146,7 @@ void recoEvents::Loop(int nEvents)
 	    SimTrackerHitData &hit = hits[idet]->at(sIndex);
 	    if (!requireQuality || hit.quality==0) {
 	      const Vector3d &psim = hit.position;
-	      fillResids(idet,pos,psim,rec.cellID);
+	      fillResids(idet,pos,psim,rec.cellID); // ***** FILL RESIDUAL
 	    }
 	  }
 	}
@@ -152,32 +155,36 @@ void recoEvents::Loop(int nEvents)
     if (verbose&0x6) printf("\n");
   }
 }
-void recoEvents::fillHit(int idet, Histos &hs,
+void recoEvents::fillHit(int simOrRec, int idet,
 			 double X, double Y, double Z, unsigned long cellID)
 {
-  unsigned int module, div; parseCellID(idet,cellID,module,div);
+  unsigned int module, div, strip; parseCellID(idet,cellID,module,div,strip);
   if (requireModule>=0 && module!=requireModule) return;
   double R2 = X*X+Y*Y, R = sqrt(R2);
   double phi = atan2(Y,X);
   double rho2 = R2+Z*Z, rho = sqrt(rho2);
   const double pi = TMath::Pi();
   double theta = rho?acos(Z/rho):999*pi;
-  hs.X->Fill(X,div); hs.Y->Fill(Y,div); hs.R->Fill(R,div);
-  hs.RA->Fill(R,div);
-  hs.Z->Fill(Z,div);
-  hs.phi->Fill(phi,div); hs.th->Fill(theta,div);
-  hs.mod->Fill(module,div);
-  hs.thphi->Fill(phi,theta);
-  hs.XY->Fill(X,Y); hs.ZR->Fill(Z,R);
+  Histos *hs; if (simOrRec==0) hs = &(simHs[idet]);
+  else                         hs = &(recHs[strip][idet]);
+  //  printf("======= %d %d %u %p\n",simOrRec,idet,strip,hs);
+  hs->X->Fill(X,div); hs->Y->Fill(Y,div); hs->R->Fill(R,div);
+  hs->RA->Fill(R,div);
+  hs->Z->Fill(Z,div);
+  hs->phi->Fill(phi,div); hs->th->Fill(theta,div);
+  hs->mod->Fill(module,div);
+  hs->thphi->Fill(phi,theta);
+  hs->XY->Fill(X,Y); hs->ZR->Fill(Z,R);
 
   if      (idet==0) { // Special CyMBaL: fill reduced Radius
     double Xr, Yr, Rr, phir; int zone; getReducedCyMBaL(X,Y,div,Xr,Yr,Rr,phir,&zone);
-    hs.Rr->Fill(Rr,div);
-    hs.XYr[zone]->Fill(Xr,Yr);
+    hs->phir->Fill(phir,div);
+    hs->Rr->Fill(Rr,div);
+    hs->XYr[zone]->Fill(Xr,Yr);
   }
   else if (idet==1) { // Special Outer: fill Rcosphi
     double Rcdphi; int zone; getReducedOuter(X,Y,module,Rcdphi);
-    hs.Rr->Fill(Rcdphi,div);
+    hs->Rr->Fill(Rcdphi,div);
   }
 }
 void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim, unsigned long cellID)
@@ -192,11 +199,11 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
   double dphi = 1000*(phi-phis);
   double D = sqrt(R2+Z*Z), Ds = sqrt(Rs2+Zs*Zs), dD = 1000*(D-Ds);
   if (verbose&0x1) printf("rX,rY,rZ: %.2f,%.2f,%.2f,%.2f\n",dX,dY,dZ,dD);
-  Resids &rs = resHs[idet];
+  unsigned int module, div, strip; parseCellID(idet,cellID,module,div,strip);
+  Resids &rs = resHs[strip][idet];
   rs.X->Fill(dX); rs.Y->Fill(dY); rs.Z->Fill(dZ); rs.R->Fill(dR); rs.D->Fill(dD);
   rs.phi->Fill(dphi);
   if      (idet==0) { // CyMBaL specific
-    unsigned int module, div; parseCellID(idet,cellID,module,div);
     double Xd, Yd, Rr, phir;   getReducedCyMBaL(X,Y,div,Xd,Yd,Rr,phir);
     double Rrs, phirs;         getReducedCyMBaL(Xs,Ys,div,Xd,Yd,Rrs,phirs);
     if (verbose&0x1) printf("Rr,Rrs: %.2f,%.2f\n",Rr,Rrs);
@@ -204,7 +211,6 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     rs.Rr->Fill(dRr); rs.phir->Fill(dphir);
   }
   else if (idet==1) { // Outer specific
-    unsigned int module, div; parseCellID(idet,cellID,module,div);
     double Rcdphi;  getReducedOuter(X,Y,module,Rcdphi);
     double Rcdphis; getReducedOuter(Xs,Ys,module,Rcdphis);
     if (verbose&0x1) printf("Rr,Rrs: %.2f,%.2f\n",Rcdphi,Rcdphis);
@@ -268,34 +274,50 @@ void getReducedOuter(double X, double Y, unsigned int module,
   */
 }
 void recoEvents::parseCellID(int idet, unsigned long ID,
-			     unsigned int &module, unsigned int &div)
+			     unsigned int &module, unsigned int &div,
+			     unsigned int &strip)
 {
+  // ***** MODULE
+  // mpgd_barrel.xml:      <id>system:8,layer:4,module:12, ...
+  // mpgd_outerbarrel.xml: <id>system:8,layer:4,module:12, ...
+  // silicon_barrel.xml:   <id>system:8,layer:4,module:12, ...
+  // vertex_barrel.xml:    <id>system:8,layer:4,module:12, ...
+  // => All have same module specif.
   module = (ID>>12)&0xfff;
+  // ***** divISION
+  //       iRec = (strip coordinate: 0 = measurement coord, 1 = orthogonal
   if      (idet==0) { // CyMBaL
     //      <id>system:8,layer:4,module:12,sensor:2,x:32:-11,y:-10,z:-11</id>
+    //      <id>system:8,layer:4,module:12,sensor:30:4,phi:-15,z:-15</id>
     if (module>15) {
       // Forward sectors are rotated by phi
       int sector = module/8, iphi = module%8; module = 8*sector+(4+iphi)%8;
     }
     div = module;
+    strip = ID>>32&0x1;
   }
-  else if (idet==1)   // µRWELL
+  else if (idet==1) { // µRWELL
     div = module%2;      // "div" = parity
+    strip = 0; // Not yet implemented
+  }
   else if (idet==2) {   // Vertex
     int layer = (ID>>8)&0xf; // "div" = log_2(layer)
     int bit; for (bit = 0, div = 3 /* unphysical default */; bit<=2; bit++) {
       if ((0x1<<bit&layer)==layer) { div = bit; break; }
     }
+    strip = 0;
   }
-  else
+  else {
     div = ID%2;
+    strip = 0;
+  }
 }
 void recoEvents::printHit(int idet,
 			  double X, double Y, double Z, unsigned long cellID)
 {
   double R2 = X*X+Y*Y, R = sqrt(R2); double phi = atan2(Y,X);
   const double pi = TMath::Pi();
-  unsigned int module, div; parseCellID(idet,cellID,module,div);
+  unsigned int module, div, strip; parseCellID(idet,cellID,module,div,strip);
   int cell = cellID>>32;
   if (verbose&0x4) {
     printf(" 0x%08x,0x%08x  %7.2f,%7.2f,%8.2f %7.2f cm %6.3fπ",

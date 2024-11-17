@@ -14,12 +14,10 @@ recoEvents ana(events,0xf); // Instantiate for all of (0x1:CyMBaL,0x2:Outer,0x4:
 ana.select = new TTreeFormula("select", "@MCParticles.size()==1", events);// Add rejection cut
 ana.Loop();
 ana.DrawphithZR(0,0xf,true); // Draw some simHits, w/ if true, colour highlighting of module type.
-ana.DrawphithZR(1,0xf,true); // Draw some recHits, w/ if true, colour highlighting of module type.
-ana.DrawResiduals(0x1); // Draw some residuals for CyMBaL (=0x1)
+ana.DrawphithZR(1,0xf,true); // Draw some recHits (1st coord), w/ if true, colour highlighting of module type.
+ana.DrawResiduals(0,0x1); // Draw some residuals for phi (iRec=1) of CyMBaL (=0x1)
 
-ana.recHs[0].ZR[0]; h2->SetTitle("CyMBaL Rec"); h2->Draw();  SetPaveText(h2,0)
-
-gSystem->Load("/opt/software/linux-debian12-x86_64_v2/gcc-12.2.0/edm4hep-0.10.3-vzrahkvfvbeejyjjarkf5zywyhzanvmw/lib/libedm4hep.so")
+ana.recHs[0][0].ZR[0]; h2->SetTitle("CyMBaL Rec"); h2->Draw();  SetPaveText(h2,0)
 */
 
 #ifndef recoEvents_h
@@ -67,7 +65,7 @@ gSystem->Load("/opt/software/linux-debian12-x86_64_v2/gcc-12.2.0/edm4hep-0.10.3-
 using namespace std;
 using namespace edm4hep;
 
-typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *RA, *R, *phi, *th, *mod, *thphi, *XY, *ZR, *Rr, *XYr[4]; }
+typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *RA, *R, *phi, *phir, *th, *mod, *thphi, *XY, *ZR, *Rr, *XYr[4]; }
   Histos;
 typedef struct{ TDirectory *dir; TH1D *X, *Y, *Z, *R, *Rr, *D, *phi, *phir; }
   Resids;
@@ -85,37 +83,41 @@ public :
    static unsigned int nObjCreated; unsigned int iObjCreated;
    unsigned int processingMode;
    int verbose;
-   
+
    int getDetHit(int idet, int ih, double &X, double &Y, double &Z,
 		 unsigned int &module, unsigned int &div);
 
    // ***** DETECTOR NAMES
 #define N_DETs 4
    const char *detectorNames[N_DETs];
-
+   // STRIP SEGMENTATION
+   unsigned int MPGDs;  // Pattern of detectors being MPGDs
+   const char *coordNames[2][N_DETs];
+   
    // ***** HISTOS
    TTreeFormula *select; // Provides for specifying a rejection cut.
    int requireQuality; // "SimTrackerHit::quality" required for filling "simHs" and residuals
    int requireModule; // If >=0, select module "requireModule" (D=-1=All)
-   void BookHistos(Histos *Hs, const char tag);
-   void fillHit(int idet, Histos &hs,
+   void BookHistos(Histos *Hs, const char *tag);
+   void fillHit(int iSimRec, int idet,
 		double X, double Y, double Z, unsigned long cellID);
    void fillResids(int idet,
 		   const Vector3f &pos, const Vector3d &psim, unsigned long cellID);
    void parseCellID(int idet, unsigned long ID,
-		    unsigned int &module, unsigned int &div);
+		    unsigned int &module, unsigned int &div, unsigned int &strip);
    void printHit(int idet,
 		 double X, double Y, double Z, unsigned long cellID);
    static constexpr int violet = kMagenta+2, bleu = kBlue+1, vert = kGreen+2;
    static constexpr int jaune = kOrange+0, orange = kOrange+1, rouge  = kRed+0;
    static constexpr int marron = 50, gris   = 11;
-   void DrawphithZR(int simOrRec = 0, unsigned int detectorPattern = 0xf, bool decompose = false);
-   void DrawModules(int simOrRec = 0, unsigned int detectorPattern = 0x1, bool decompose = false);
-   void DrawResiduals(unsigned int detectorPattern = 0x1, TCanvas *cPrv = 0, int col = -1);
+   void DrawphithZR(int iSimRec = 0 /* 0: sim, 1: rec, 2: rec 2nd coord of MPGD */,
+		    unsigned int detectorPattern = 0xf, bool decompose = false);
+   void DrawModules(int iSimRec = 0, unsigned int detectorPattern = 0x1, bool decompose = false);
+   void DrawResiduals(int iRec = 0,   unsigned int detectorPattern = 0x1, TCanvas *cPrv = 0, int col = -1);
    TDirectory *dSim, *dSimDets[N_DETs];
    TDirectory *dRec, *dRecDets[N_DETs];
-   Histos simHs[N_DETs], recHs[N_DETs];
-   Resids resHs[N_DETs];
+   Histos simHs[N_DETs], recHs[2][N_DETs];
+   Resids resHs[2][N_DETs];
    TH1D *hMult;
 
    // ***** BRANCHES
@@ -218,8 +220,8 @@ void recoEvents::Init(TTree *tree)
      const char *branchNames[N_DETs] = {
        "_MPGDBarrel","_OuterMPGDBarrel","_SiBarrelVertex","_SiBarrel"};
      const char *branchName = branchNames[idet];
-     string namr(branchName); namr += string("HitAssociations_rawHit");
-     string nams(branchName); nams += string("HitAssociations_simHit");
+     string namr(branchName); namr += string("RawHitAssociations_rawHit");
+     string nams(branchName); nams += string("RawHitAssociations_simHit");
      fChain->SetBranchAddress(namr.c_str(),&arhs[idet],&arhBranches[idet]);
      fChain->SetBranchAddress(nams.c_str(),&ashs[idet],&ashBranches[idet]);
    }
@@ -230,8 +232,18 @@ void recoEvents::Init(TTree *tree)
 
    // ***** DETECTOR NAMES
    const char *detNs[N_DETs] = {"CyMBaL","Outer","Vertex","Si"};
-   for (int idet = 0; idet<N_DETs; idet++) detectorNames[idet] = detNs[idet];
-   
+   MPGDs = 0x1; // Temporarily only CyMBaL
+   const char *coordNs[2][2] = {{"#varphi","#font[32]{Z}"},
+				{"#font[32]{U}","#font[32]{V}"}};
+   MPGDs &= 0x3; // Enforce internal consistency: two MPGDs and only two
+   for (int idet = 0; idet<N_DETs; idet++) {
+     detectorNames[idet] = detNs[idet];
+     if (0x1<<idet&MPGDs) {
+       coordNames[0][idet] = coordNs[0][idet];
+       coordNames[1][idet] = coordNs[1][idet];
+     }
+   }
+
    // ********** HISTOS
    // ***** BASE DIRECTORY = tag it w/ recoEvents instance#
    TDirectory *dSave = gDirectory;
@@ -241,52 +253,74 @@ void recoEvents::Init(TTree *tree)
    if (iObj) snprintf(dN,lN,"dSim%d",iObj);
    else      snprintf(dN,lN,"dSim");
    dSim = gDirectory->mkdir(dN); dSim->cd();
-   printf(" * BookHistos: TDirectory \"%s\"\n",gDirectory->GetName());
+   printf(" * Init: TDirectory \"%s\"\n",gDirectory->GetName());
    // ***** INSTANTIATION
-   BookHistos(simHs,'s');
+   BookHistos(simHs,"s");
    dSave->cd();
    // ***** RECO HISTOS
    if (iObj) snprintf(dN,lN,"dRec%d",iObj);
    else      snprintf(dN,lN,"dRec");
    dRec = gDirectory->mkdir(dN); dRec->cd();
-   printf(" * BookHistos: TDirectory \"%s\"\n",gDirectory->GetName());
+   printf(" * Init: TDirectory \"%s\"\n",gDirectory->GetName());
    // ***** INSTANTIATION
-   BookHistos(recHs,'r');
+   BookHistos(recHs[0],"r0");
+   BookHistos(recHs[1],"r1");
    dSave->cd();
 }
 // *************** HISTOS
-void recoEvents::BookHistos(Histos *Hs, const char tag)
+void recoEvents::BookHistos(Histos *Hs, const char* tag)
 {
   using namespace ROOT;
   using namespace std;
 
+  // ***** PARSE <tag> ARG.
+  // Check internal consistency
+  if (strcmp(tag,"s") && strcmp(tag,"r0") && strcmp(tag,"r1")) {
+    printf("** BookHistos: Inconsistency: Unvalid <tag> arg.(=\"%s\"). Aborting...\n",tag);
+    exit(1);
+  }
+  bool isRec = tag[0]=='r';
+  // ***** MPGDs
+  int iStrip = 0;
+  if (!strcmp(tag,"r1")) iStrip = 2; // 2nd coordinate, for MPGDs
+  else                   iStrip = 1;
+
   // ***** BASE DIRECTORY
   TDirectory *dSave = gDirectory;
-  hMult = new TH1D("hMult","@MCparticles.size()",512,0,512);
-  
+  if (!isRec) // Only once
+    hMult = new TH1D("hMult","@MCparticles.size()",512,0,512);
+
   // ********** LOOP ON DETECTORS
   for (int idet = 0; idet<N_DETs; idet++) {
     if (!(0x1<<idet&processingMode)) continue;
+    if (iStrip==2 && !(0x1<<idet&MPGDs)) // 2nd coordinate: skip if not MPGD
+      continue;
     Histos &hs = Hs[idet];
     // ***** SUB-DIRECTORY
     string sdS = string("d")+string(detectorNames[idet]);
+    if ((0x1<<idet&MPGDs) && iStrip==2) sdS += string("2"); 
     const char *sdN = sdS.c_str();
     TDirectory *dSD = dSave->mkdir(sdN); dSD->cd(); hs.dir = dSD;
-    printf(" * BookHistos: TDirectory \"%s\"\n",gDirectory->GetName());
+    printf(" * BookHistos: TDirectory \"%s\"",gDirectory->GetName());
+    if ((0x1<<idet&MPGDs) && iStrip==2) {
+      string sdT("2nd coord."); gDirectory->SetTitle(sdT.c_str());
+      printf(" - %s\n",gDirectory->GetTitle());
+    }
+    printf("\n");
     // *************** INSTANTIATE HISTOS
     // ***** SET HISTO RANGES 
-    double dX, dY, RAve, dR, ZMn, ZMx; int nMods, nDivs, nLayers;
+    double dX, dY, RAve, dR, ZMn, ZMx; int nMods, modMn, nDivs, nLayers;
     if      (idet==0) { // ********** CyMBaL
       dX=dY = 600;
       RAve = 565; dR = 25;
-      // ***** Z RANGE: Let's extrema of sensitive area fall on bin edge
+      // ***** Z RANGE: Let extrema of sensitive area fall on bin edge
       // From: epic/compact/tracking/definitions_craterlake.xml
       //<constant name="InnerMPGDBarrel_zmin"            value="105*cm"/> <comment> negative z </comment>
       //<constant name="InnerMPGDBarrel_zmax"            value="143*cm"/> <comment> positive z </comment>
-      // From: epic/compact/tracking/mpgd_barrel_ver1.xml
+      // From: epic/compact/tracking/mpgd_barrel.xml
       //<constant name="MMOutwardFrameWidth"                    value="5.0*cm"/>
       ZMn = -1000; ZMx = 1380;
-      nMods=nDivs = 32; // 4 sectors * 8 staves
+      nMods=nDivs = 32; modMn = 0; // 4 sectors * 8 staves, numbering from 0
       nLayers = 1;
     }
     else if (idet==1) { // ********** µRWELL
@@ -295,7 +329,7 @@ void recoEvents::BookHistos(Histos *Hs, const char tag)
       // <constant name="MPGDOuterBarrelModule_zmin1"     value="164.5*cm"/>
       // <constant name="MPGDOuterBarrelModule_zmin2"     value="174.5*cm"/>
       ZMn = -1645; ZMx = 1745;
-      nMods = 24; nDivs = 2;
+      nMods = 24; nDivs = 2; modMn = 1; // Numbering from 1
       nLayers = nDivs;
     }
     else if (idet==2) { // ********** VERTEX
@@ -305,7 +339,7 @@ void recoEvents::BookHistos(Histos *Hs, const char tag)
       RAve = 80; dR = 50;
       // <constant name="VertexBarrel_length"             value="270.0*mm"/>
       ZMn = -135; ZMx = 135;
-      nMods = 128; nDivs = 3; // 3 layers
+      nMods = 128; nDivs = 3; modMn = 1; // 3 layers, numbering from 1
       nLayers = nDivs;
     }
     else if (idet==3) { // ********** Si
@@ -316,7 +350,7 @@ void recoEvents::BookHistos(Histos *Hs, const char tag)
       // <comment> projective cone at 45 degree </comment>
       // <constant name="SiBarrel_angle"                  value="TrackerPrimaryAngle"/>
       ZMn = -500; ZMx = 500;
-      nMods = 68; nDivs = 2;
+      nMods = 68; nDivs = 2; modMn = 1; // Numbering from 1
       nLayers = nDivs;
     }
     double dZ = 8*(ZMx-ZMn)/240; ZMn -= dZ; ZMx += dZ;
@@ -324,46 +358,52 @@ void recoEvents::BookHistos(Histos *Hs, const char tag)
     double divMn = -.5, divMx = nDivs-.5; 
     const double pi = TMath::Pi();
     char hN[] = "hthphi"; size_t lN = strlen(hN)+1;
+    // ***** HISTO TITLE = DETECTOR NAME [+ STRIP COORDINATE]
     char hT[] =
-      "CyMBaL;#font[32]{dRc#delta#varphi}  #font[22]{(#mum)}   "; size_t lT = strlen(hT)+1;
+      "CyMBaL#varphi;#font[32]{dRc#delta#varphi}  #font[22]{(#mum)}   "; size_t lT = strlen(hT)+1;
     //"CyMBaL;#font[32]{d}#varphir  #font[22]{(mrad)}   ";
     //"CyMBaL;#font[32]{X}  #font[22]{(#mum)}   ";
-    string dS(detectorNames[idet]); const char *dN = dS.c_str();
+    string dS(detectorNames[idet]);
+    if (0x1<<idet&MPGDs) dS += string(coordNames[iStrip-1][idet]);
+    const char *dN = dS.c_str();
     // ***** LOOP ON HISTOS
-    snprintf(hN,lN,"%c%s",tag,"X");
+    snprintf(hN,lN,"%s%s",tag,"X");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'X');
     hs.X =   new TH2D(hN,hT,256,-dX,  dX,nDivs,divMn,divMx);
-    snprintf(hN,lN,"%c%s",tag,"Y");
+    snprintf(hN,lN,"%s%s",tag,"Y");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'Y');
     hs.Y =   new TH2D(hN,hT,256,-dY,  dY,nDivs,divMn,divMx);
-    snprintf(hN,lN,"%c%s",tag,"RA");
+    snprintf(hN,lN,"%s%s",tag,"RA");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'R');
     hs.RA =  new TH2D(hN,hT,256,  0,RAMx,nDivs,divMn,divMx);
-    snprintf(hN,lN,"%c%s",tag,"R");
+    snprintf(hN,lN,"%s%s",tag,"R");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'R');
     hs.R =   new TH2D(hN,hT,256,RMn, RMx,nDivs,divMn,divMx);
     if      (idet==0) { // If CyMBaL
-      snprintf(hN,lN,"%c%s",tag,"Rr");
+      snprintf(hN,lN,"%s%s",tag,"Rr");
       snprintf(hT,lT,"%s;#font[32]{%c}r  #font[22]{(mm)}   ",dN,'R');
       hs.Rr =  new TH2D(hN,hT,1024,RMn, RMx,nDivs,divMn,divMx);
     }
     else if (idet==1) { // If Outer
-      snprintf(hN,lN,"%c%s",tag,"Rr");
+      snprintf(hN,lN,"%s%s",tag,"Rr");
       snprintf(hT,lT,"%s;#font[32]{%s}  #font[22]{(mm)}   ",dN,"Rc#delta#varphi");
       hs.Rr =  new TH2D(hN,hT,1024,RMn, RMx,nDivs,divMn,divMx);
     }
-    snprintf(hN,lN,"%c%s",tag,"Z");
+    snprintf(hN,lN,"%s%s",tag,"Z");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'Z');
     hs.Z =   new TH2D(hN,hT,256,ZMn, ZMx,nDivs,divMn,divMx);
-    snprintf(hN,lN,"%c%s",tag,"phi");
+    snprintf(hN,lN,"%s%s",tag,"phi");
     snprintf(hT,lT,"%s;#varphi  #font[22]{(rad)}   ",dN);
     hs.phi = new TH2D(hN,hT,512,-pi,  pi,nDivs,divMn,divMx); 
-    snprintf(hN,lN,"%c%s",tag,"th");
+    snprintf(hN,lN,"%s%s",tag,"phir");
+    snprintf(hT,lT,"%s;#varphir  #font[22]{(rad)}   ",dN);
+    hs.phir = new TH2D(hN,hT,512,-pi,  pi,nDivs,divMn,divMx); 
+    snprintf(hN,lN,"%s%s",tag,"th");
     snprintf(hT,lT,"%s;#theta  #font[22]{(rad)}   ",dN);
     hs.th =  new TH2D(hN,hT,256,  0,  pi,nDivs,divMn,divMx);
-    snprintf(hN,lN,"%c%s",tag,"mod");
+    snprintf(hN,lN,"%s%s",tag,"mod");
     snprintf(hT,lT,"%s;module#",dN);
-    hs.mod = new TH2D(hN,hT,nMods,-.5,nMods-.5,nLayers,divMn,divMx);
+    hs.mod = new TH2D(hN,hT,nMods,modMn-.5,modMn+nMods-.5,nLayers,divMn,divMx);
     TH2D *h2s[] = {hs.X,hs.Y,hs.RA,hs.R,hs.Z,hs.phi,hs.th,hs.mod,
 		   hs.Rr}; // CyMBaL/Outer specific
     int nh2s = sizeof(h2s)/sizeof(TH2D*);
@@ -380,7 +420,7 @@ void recoEvents::BookHistos(Histos *Hs, const char tag)
     }
     // ***** 2D HISTOS: X vs. Y, R vs. Z, theta vs. phi
     string sT;
-    snprintf(hN,lN,"%c%s",tag,"XY");
+    snprintf(hN,lN,"%s%s",tag,"XY");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'X');
     sT = string(hT);
     snprintf(hT,lT,";#font[32]{%c}  #font[22]{(mm)}   ",'Y');
@@ -399,13 +439,13 @@ void recoEvents::BookHistos(Histos *Hs, const char tag)
 	hs.XYr[zone]->SetLineColor(cols[zone]);
       }
     }
-    snprintf(hN,lN,"%c%s",tag,"ZR");
+    snprintf(hN,lN,"%s%s",tag,"ZR");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'Z');
     sT = string(hT);
     snprintf(hT,lT,";#font[32]{%c}  #font[22]{(mm)}   ",'R');
     sT += string(hT); const char *hTZR = sT.c_str();
     hs.ZR = new TH2D(hN,hTZR,256,ZMn,ZMx,256,RMn,RMx);
-    snprintf(hN,lN,"%c%s",tag,"thphi");
+    snprintf(hN,lN,"%s%s",tag,"thphi");
     snprintf(hT,lT,"%s;#varphi  #font[22]{(rad)}   ",dN);
     sT = string(hT);
     snprintf(hT,lT,";#theta  #font[22]{(rad)}");
@@ -427,19 +467,38 @@ void recoEvents::BookHistos(Histos *Hs, const char tag)
       ay->SetTitleSize(.06); ay->SetTitleOffset(.8);
       ay->SetMaxDigits(2);
     }
-    if (tag=='r') {
-      // ***** RESIDUALS
-      Resids &rs = resHs[idet]; rs.dir = dSD;
-      // Ranges
-      double dr = idet<2 ? 800 /* MPGDs */ : 25 /* Si */; // in µm
+    if (isRec) {
+      // ******************** RESIDUALS ********************
+      int i01 = tag[1]=='0' ? 0 : 1;
+      Resids &rs = resHs[i01][idet]; rs.dir = dSD;
+      // ***** RANGES
+      double dx = idet<2 ? 800 /* All MPGDs */ : 25 /* Si */; // in µm
+      double dr = dx, dd = dx;
+      double dz = dr;
+      double dphi = .8; // in mrad
+      if (0x1<<idet&MPGDs) { // ***** MPGDs: UPDATE RANGES DEPENDING ON iStrip
+	if (idet==0) { // CyMBaL
+	  // From: epic/compact/tracking/mpgd_barrel.xml
+	  // <constant name="MMModuleLength"                         value="61.0*cm"/>
+	  // 256-16-16 bins for the core part, 2x16 bins outside 
+	  double modL = 610, deltaZ = 610./224, dz_phi = modL/2+16*deltaZ;
+	  // For phi, X and Y, no way to have limit at bin edge, since we have
+	  // 2 distinct sensitive surface radii, viz. 55.6755 and 57.8755
+	  double dphi_Z = 2*pi/8/2; dphi_Z *= 1.10;
+	  double RsurfMx = 578.755, dx_Z = dphi_Z*RsurfMx;
+	  dz_phi *= 1000; dx_Z *= 1000; dphi_Z *= 1000; // mm -> µm, rad -> mrad
+	  if (iStrip==1) dz = dz_phi;
+	  else         { dphi = dphi_Z; dx = dx_Z; }
+	  dd = sqrt(4*dx_Z*dx_Z+dz_phi*dz_phi);
+	}
+      }
       double dRr = 80;
-      double dphi = .8; // in µrad
       snprintf(hN,lN,"%c%s",'d',"X");
       snprintf(hT,lT,"%s;#font[32]{%s}  #font[22]{(#mum)}   ",dN,"dX");
-      rs.X =   new TH1D(hN,hT,256,-dr,dr);
+      rs.X =   new TH1D(hN,hT,256,-dx,dx);
       snprintf(hN,lN,"%c%s",'d',"Y");
       snprintf(hT,lT,"%s;#font[32]{%s}  #font[22]{(#mum)}   ",dN,"dY");
-      rs.Y =   new TH1D(hN,hT,256,-dr,dr);
+      rs.Y =   new TH1D(hN,hT,256,-dx,dx);
       snprintf(hN,lN,"%c%s",'d',"R");
       snprintf(hT,lT,"%s;#font[32]{%s}  #font[22]{(#mum)}   ",dN,"dR");
       rs.R =   new TH1D(hN,hT,256,-dr,dr);
@@ -455,10 +514,10 @@ void recoEvents::BookHistos(Histos *Hs, const char tag)
       }
       snprintf(hN,lN,"%c%s",'d',"Z");
       snprintf(hT,lT,"%s;#font[32]{%s}  #font[22]{(#mum)}   ",dN,"dZ");
-      rs.Z =   new TH1D(hN,hT,256,-dr,dr);
+      rs.Z =   new TH1D(hN,hT,256,-dz,dz);
       snprintf(hN,lN,"%c%s",'d',"dist");
       snprintf(hT,lT,"%s;#font[32]{%s}  #font[22]{(#mum)}   ",dN,"dD");
-      rs.D = new TH1D(hN,hT,512,-dr,dr);
+      rs.D =   new TH1D(hN,hT,512,-dd,dd);
       snprintf(hN,lN,"%c%s",'d',"phi");
       snprintf(hT,lT,"%s;#font[32]{d}#varphi  #font[22]{(mrad)}   ",dN);
       rs.phi = new TH1D(hN,hT,512,-dphi,dphi); 
@@ -472,7 +531,7 @@ void recoEvents::BookHistos(Histos *Hs, const char tag)
       else if (idet==1) nr1s -= 1; // If !CyMBaL, cancel        rs.phir
       for (int ih = 0; ih<nr1s; ih++) {
 	TAxis *ax = r1s[ih]->GetXaxis();
-	ax->SetNdivisions(505);
+	ax->SetNdivisions(510);
 	ax->SetLabelSize(.05); ax->SetLabelOffset(.006);
 	ax->SetTitleSize(.06); ax->SetTitleOffset(.8);
 	ax->SetMaxDigits(3);
@@ -511,22 +570,40 @@ Int_t recoEvents::Cut(Long64_t entry)
 // returns -1 otherwise.
    return 1;
 }
-void recoEvents::DrawphithZR(int simOrRec, unsigned int detectorPattern, bool decompose)
+void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of MPGD
+			     unsigned int detectorPattern, bool decompose)
 {
+  // ***** PARSE <iSimRec> ARG.
+  if (iSimRec<0 || 2<iSimRec) {
+    printf("** DrawphithZR: Unvalid <iSimRec> arg.(=%d): neither 0(=sim) nor 1(=rec) nor 2(=2nd coord of MPGD)\n",iSimRec); return;
+  }
   TDirectory *dSave = gDirectory;
   unsigned int pat = processingMode&detectorPattern;
   for (int idet = 0; idet<N_DETs; idet++) {
     if (!(0x1<<idet&pat)) continue;
-    Histos *Hs = simOrRec ? recHs : simHs;
+    Histos *Hs; switch (iSimRec) {
+    case 0: Hs = simHs;    break;
+    case 1: Hs = recHs[0]; break;
+    case 2: if (!(0x1<<idet&MPGDs)) {
+	printf("** DrawphithZR: requesting <iSimRec> = 2 for idet = 0x%x (\"%s\") which is not among MPGDs(=0x%x)\n",
+	       0x1<<idet,detectorNames[idet],MPGDs); continue;
+      }
+      /* */ Hs = recHs[1]; break;
+    default: printf("** DrawphithZR: Unvalid <iSimRec> (=%d, not in [0,2])\n",
+		    iSimRec); return;
+    }
     Histos &hs = Hs[idet]; hs.dir->cd();
+    // ***** TCANVAS
     string cS = string("c")+string(detectorNames[idet]);
     char cTag[] = "0";    // tag to cope w/ several distinct recoEvents object
     int iObj = iObjCreated; if (iObj) { *cTag += iObj%10; cS += string(cTag); }
-    if (simOrRec) cS += string("Rec");
+    if (iSimRec)
+      cS += iSimRec==2 ? string("Rec2") : string("Rec");
     const char *cN = cS.c_str();
     TCanvas *cEvents = new TCanvas(cN,cN);
     cEvents->Divide(2,2);
     gStyle->SetOptStat(10);
+    // ***** LOOP ON (selected subset of) HISTOS
     TH2D *h2s[4] = { hs.phi,hs.th,hs.Z,hs.R };
     if (idet<2) h2s[3] = hs.Rr;
     for (int ih = 0; ih<4; ih++) {
@@ -581,14 +658,28 @@ void recoEvents::DrawphithZR(int simOrRec, unsigned int detectorPattern, bool de
   }
   dSave->cd();
 }
-void recoEvents::DrawModules(int simOrRec, unsigned int detectorPattern, bool decompose)
+void recoEvents::DrawModules(int iSimRec, unsigned int detectorPattern, bool decompose)
 {
   // ***** DRAW module# FOR EACH DETECTOR IN detectorPattern
+  // ***** PARSE <iSimRec> ARG.
+  if (iSimRec<0 || 2<iSimRec) {
+    printf("** DrawphithZR: Unvalid <iSimRec> arg.(=%d): neither 0(=sim) nor 1(=rec) nor 2(=2nd coord of MPGD)\n",iSimRec); return;
+  }
   TDirectory *dSave = gDirectory;
   unsigned int pat = processingMode&detectorPattern;
   for (int idet = 0; idet<N_DETs; idet++) {
     if (!(0x1<<idet&pat)) continue;
-    Histos *Hs = simOrRec ? recHs : simHs;
+    Histos *Hs; switch (iSimRec) {
+    case 0: Hs = simHs; break;
+    case 1: Hs = recHs[0]; break;
+    case 2: if (!(0x1<<idet&MPGDs)) {
+	printf("** DrawModules: requesting <iSimRec> = 2 for idet = 0x%x (\"%s\") which is not among MPGDs(=0x%x)\n",
+	       0x1<<idet,detectorNames[idet],MPGDs); continue;
+      }
+      /* */ Hs = recHs[1]; break;
+    default: printf("** DrawphithZR: Unvalid <iSimRec> (=%d, not in [0,2])\n",
+		    iSimRec); return;
+    }
     Histos &hs = Hs[idet]; hs.dir->cd();
     TH2D *h2 = hs.mod;
     TH1D *hproj = h2->ProjectionX(); hproj->Draw();
@@ -613,9 +704,17 @@ void recoEvents::DrawModules(int simOrRec, unsigned int detectorPattern, bool de
   }
   dSave->cd();
 }
-void recoEvents::DrawResiduals(unsigned int detectorPattern, TCanvas *cPrv, int col)
+void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of MPGDs phi/Z U/V
+			       unsigned int detectorPattern,
+			       TCanvas *cPrv, int col) // Superimpose on pre-existing TCanvas cPrv
 {
-  // ***** DRAW (subset of) RESIDUALS FOR EACH DETECTOR IN detectorPattern
+  // ********** DRAW (subset of) RESIDUALS FOR EACH DETECTOR IN detectorPattern
+  // ***** PARSE <iRec> ARG.
+  if (iRec<1 || 2<iRec) {
+    printf("** DrawResiduals: Unvalid <iRec> arg.(=%d): neither 1(=1st coord.) nor 2(=2nd coord.)\n",iRec); return;
+  }
+  int strip = iRec-1;
+  // ***** CONTEXT
   gStyle->SetOptStat(1110);
   string prvFormat = string(gStyle->GetStatFormat());
   TDirectory *dSave = gDirectory;
@@ -623,12 +722,16 @@ void recoEvents::DrawResiduals(unsigned int detectorPattern, TCanvas *cPrv, int 
   // ***** LOOP ON DETECTORS
   for (int idet = 0; idet<N_DETs; idet++) {
     if (!(0x1<<idet&pat)) continue;
+    if (strip && !(0x1<<idet&MPGDs)) { // 2nd coordinate: skip if not MPGD
+      printf("** DrawResiduals: requesting <iRec> = 2 for idet = 0x%x (\"%s\") which is not among MPGDs(=0x%x)\n",
+	     0x1<<idet,detectorNames[idet],MPGDs); continue;
+    }
     TCanvas *cResids; if (!cPrv) {
       // ***** CANVAS
       string cS = string("c")+string(detectorNames[idet]);
       char cTag[] = "0";    // tag to cope w/ several distinct recoEvents object
       int iObj = iObjCreated; if (iObj) { *cTag += iObj%10; cS += string(cTag); }
-      cS += string("Res");
+      cS += strip ? string("Res2") : string("Res");
       const char *cN = cS.c_str();
       cResids = new TCanvas(cN,cN);
       cResids->Divide(2,2);
@@ -637,7 +740,7 @@ void recoEvents::DrawResiduals(unsigned int detectorPattern, TCanvas *cPrv, int 
       cResids = cPrv;
     gStyle->SetStatFormat("6.3g");
     // ***** LOOP ON RESIDUALS (in subset)
-    Resids &rs = resHs[idet]; rs.dir->cd();
+    Resids &rs = resHs[strip][idet]; rs.dir->cd();
     TH1D *r1s[4] = {rs.X, rs.Z, rs.phi, rs.R};
     if      (idet==0) { r1s[2] = rs.phir; r1s[3] = rs.Rr; }
     else if (idet==1) r1s[3] = rs.Rr; 
