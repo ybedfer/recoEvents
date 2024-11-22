@@ -79,7 +79,7 @@ void recoEvents::Loop(int nEvents)
       int nRecs = recs[idet]->size(); // Rec hits
       if (!(nArhs||nAshs||nHits||nRecs)) continue;
       if (verbose&0x1) printf("%3d det %d: arh,ash,hit,rec %d,%d,%d,%d\n",
-			  jentry,idet,nArhs,nAshs,nHits,nRecs);
+			      (int)jentry,idet,nArhs,nAshs,nHits,nRecs);
       map<int,int,less<int>> raw2sim;
       if (verbose&0x1) {
 	for (int ih = 0; ih<nArhs; ih++) {
@@ -95,7 +95,8 @@ void recoEvents::Loop(int nEvents)
       }
       // ********** BUILD raw <-> sim MAP
       if (nAshs!=nArhs) {
-	printf("Warning: %3d det %d: ash(%d)!=arh(%d)\n",nAshs,nArhs);
+	printf("Warning: %3d det %d: ash(%d)!=arh(%d)\n",
+	       (int)jentry,idet,nAshs,nArhs);
       }
       else {
 	for (int ih = 0; ih<nArhs; ih++) {
@@ -112,13 +113,13 @@ void recoEvents::Loop(int nEvents)
 	const Vector3d &pos = hit.position;
 	double X = pos.x, Y = pos.y, Z = pos.z;
 	if (requireQuality && hit.quality!=0) {
-	  if (verbose&0x1) printf("hit %d: %6.1f,%6.1f,%6.1f 0x%x !OK\n",
+	  if (verbose&0x1) printf("hit %d: %6.1f,%6.1f,%6.1f 0x%lx !OK\n",
 			      ih,X,Y,Z,hit.cellID>>32);
 	  continue;
 	}
 	fillHit(0,idet,X,Y,Z,hit.cellID);       // ***** FILL sim HISTOS
-	if (verbose&0x1) printf("hit %d: %6.1f,%6.1f,%6.1f 0x%x\n",
-			    ih,X,Y,Z,hit.cellID>>32);
+	if (verbose&0x1) printf("hit %d: %6.1f,%6.1f,%6.1f 0x%lx\n",
+				ih,X,Y,Z,hit.cellID>>32);
 	if (verbose&0x6) printHit(idet,X,Y,Z,hit.cellID);
       }
       for (int ih = 0; ih<nRecs; ih++) {
@@ -127,20 +128,20 @@ void recoEvents::Loop(int nEvents)
 	const Vector3f &pos = rec.position;
 	double X = pos.x, Y = pos.y, Z = pos.z;    
 	fillHit(1,idet,X,Y,Z,rec.cellID);       // ***** FILL rec HISTOS
-	if (verbose&0x1) printf("rec %d: %6.1f,%6.1f,%6.1f 0x%x\n",
-			    ih,X,Y,Z,rec.cellID>>32);
+	if (verbose&0x1) printf("rec %d: %6.1f,%6.1f,%6.1f 0x%lx\n",
+				ih,X,Y,Z,rec.cellID>>32);
 	if (verbose&0x6) printHit(idet,X,Y,Z,rec.cellID);
 	// ********** RESIDUALS
 	map<int,int,less<int>>::const_iterator im = raw2sim.find(ih);
 	if (im==raw2sim.end()) {
-	  printf("Warning: %3d det %d: raw %s not associated\n",
-		 jentry,idet,ih);
+	  printf("Warning: %3d det %d: raw %d not associated\n",
+		 (int)jentry,idet,ih);
 	}
 	else {
 	  int sIndex = im->second; // ***** REFERENCE TO sim HIT
 	  if (sIndex<0 || nHits<=sIndex) {
-	    printf("Warning: %3d det %d: raw %s <-> sim %d\n",
-		   jentry,idet,ih,sIndex);
+	    printf("Warning: %3d det %d: raw %d <-> sim %d\n",
+		   (int)jentry,idet,ih,sIndex);
 	  }
 	  else {
 	    SimTrackerHitData &hit = hits[idet]->at(sIndex);
@@ -320,7 +321,7 @@ void recoEvents::printHit(int idet,
   unsigned int module, div, strip; parseCellID(idet,cellID,module,div,strip);
   int cell = cellID>>32;
   if (verbose&0x4) {
-    printf(" 0x%08x,0x%08x  %7.2f,%7.2f,%8.2f %7.2f cm %6.3fπ",
+    printf(" 0x%08lx,0x%08x  %7.2f,%7.2f,%8.2f %7.2f cm %6.3fπ",
 	   cellID&0xfffffff,cell,X,Y,Z,R,phi/pi);
     if      (idet==1) printf(" %5.1f 0x%02x 0x%x",phi/pi*12,module,module>>1);
     else if (idet==0) printf(" %5.1f 0x%02x 0x%x",phi/pi*8, module,module>>1);
