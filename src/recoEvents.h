@@ -6,9 +6,9 @@
 
 /*
 // USAGE
-const char tag[7] = "sensor";
-TChain *events = new TChain("events"); char fName[] = "podio_output.sensor.1234.root"; size_t lN = strlen(fName)+1; int seeds[] = {1234,4567,8910,1112}; int nSeeds = sizeof(seeds)/sizeof(int);
-for (int i = 0; i<nSeeds; i++) { snprintf(fName,lN,"podio_output.%s.%4d.root",tag,seeds[i]); events->Add(fName); }
+const char tag[7] = "struv";
+TChain *events = new TChain("events"); char fName[] = "podio.sensor.1234.root"; size_t lN = strlen(fName)+1; int seeds[] = {1234,4567,8910,1112}; int nSeeds = sizeof(seeds)/sizeof(int);
+for (int i = 0; i<nSeeds; i++) { snprintf(fName,lN,"podio.%s.%4d.root",tag,seeds[i]); events->Add(fName); }
 .L ../recoEvents/install/librecoEvents.so
 recoEvents ana(events,0xf); // Instantiate for all of (0x1:CyMBaL,0x2:Outer,0x4:Vertex,0x8:Si)
 ana.select = new TTreeFormula("select", "@MCParticles.size()==1", events);// Add rejection cut
@@ -65,9 +65,9 @@ ana.recHs[0][0].ZR[0]; h2->SetTitle("CyMBaL Rec"); h2->Draw();  SetPaveText(h2,0
 using namespace std;
 using namespace edm4hep;
 
-typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *RA, *R, *phi, *phir, *th, *mod, *thphi, *XY, *ZR, *Rr, *XYr[4]; }
+typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *RA, *R, *phi, *phir, *th, *mod, *thphi, *XY, *ZR, *Rr, *XYr[4], *Ur, *Vr; }
   Histos;
-typedef struct{ TDirectory *dir; TH1D *X, *Y, *Z, *R, *Rr, *D, *phi, *phir; }
+typedef struct{ TDirectory *dir; TH1D *X, *Y, *Z, *R, *Rr, *D, *phi, *phir, *Ur, *Vr; }
   Resids;
 
 void SetPaveText(TH1 *h, int mode = 0);
@@ -232,15 +232,15 @@ void recoEvents::Init(TTree *tree)
 
    // ***** DETECTOR NAMES
    const char *detNs[N_DETs] = {"CyMBaL","Outer","Vertex","Si"};
-   MPGDs = 0x1; // Temporarily only CyMBaL
-   const char *coordNs[2][2] = {{"#varphi","#font[32]{Z}"},
+   MPGDs = 0x3; // Temporarily only CyMBaL
+   const char *coordNs[2][2] = {{"#scale[1.2]{#varphi}","#font[32]{Z}"},
 				{"#font[32]{U}","#font[32]{V}"}};
    MPGDs &= 0x3; // Enforce internal consistency: two MPGDs and only two
    for (int idet = 0; idet<N_DETs; idet++) {
      detectorNames[idet] = detNs[idet];
      if (0x1<<idet&MPGDs) {
-       coordNames[0][idet] = coordNs[0][idet];
-       coordNames[1][idet] = coordNs[1][idet];
+       coordNames[0][idet] = coordNs[idet][0];
+       coordNames[1][idet] = coordNs[idet][1];
      }
    }
 
@@ -304,12 +304,13 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     printf(" * BookHistos: TDirectory \"%s\"",gDirectory->GetName());
     if ((0x1<<idet&MPGDs) && iStrip==2) {
       string sdT("2nd coord."); gDirectory->SetTitle(sdT.c_str());
-      printf(" - %s\n",gDirectory->GetTitle());
+      printf(" - %s",gDirectory->GetTitle());
     }
     printf("\n");
     // *************** INSTANTIATE HISTOS
     // ***** SET HISTO RANGES 
     double dX, dY, RAve, dR, ZMn, ZMx; int nMods, modMn, nDivs, nLayers;
+    double dUr = 0;
     if      (idet==0) { // ********** CyMBaL
       dX=dY = 600;
       RAve = 565; dR = 25;
@@ -329,6 +330,14 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       // <constant name="MPGDOuterBarrelModule_zmin1"     value="164.5*cm"/>
       // <constant name="MPGDOuterBarrelModule_zmin2"     value="174.5*cm"/>
       ZMn = -1645; ZMx = 1745;
+      //<constant name="MPGDOuterBarrelModule_length"                  value="0.5*(MPGDOuterBarrelModule_zmin1 + MPGDOuterBarrelModule_zmin2 + MPGDOuterBarrelModule_zoverlap)"/>
+      //<constant name="MPGDOuterBarrelModule_zoverlap"                value="0*MPGDOuterBarrelFrame_width"/>
+      double zmin1 = 1640.5, zmin2 = 1740.5, modL = (zmin1+zmin2)/2;
+      // <constant name="MPGDOuterBarrelModule_width"                   value="36.0*cm"/>
+      double modW = 360;
+      // UR: 224 for core part + 2*16 bins on the edge to get possible stray hits
+      double dRangeUr = (modL+modW)*sqrt(2)/2;
+      double deltaUr = dRangeUr/224; dUr = dRangeUr+16*deltaUr;
       nMods = 24; nDivs = 2; modMn = 1; // Numbering from 1
       nLayers = nDivs;
     }
@@ -353,18 +362,19 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       nMods = 68; nDivs = 2; modMn = 1; // Numbering from 1
       nLayers = nDivs;
     }
-    double dZ = 8*(ZMx-ZMn)/240; ZMn -= dZ; ZMx += dZ;
+    // Z: 224 for core part + 2*16 bins on the edge to get possible stray hits
+    double dZ = 16*(ZMx-ZMn)/224; ZMn -= dZ; ZMx += dZ;
     double RAMx = 2*RAve, RMn = RAve-dR, RMx = RAve+dR;
     double divMn = -.5, divMx = nDivs-.5; 
     const double pi = TMath::Pi();
     char hN[] = "hthphi"; size_t lN = strlen(hN)+1;
     // ***** HISTO TITLE = DETECTOR NAME [+ STRIP COORDINATE]
     char hT[] =
-      "CyMBaL#varphi;#font[32]{dRc#delta#varphi}  #font[22]{(#mum)}   "; size_t lT = strlen(hT)+1;
-    //"CyMBaL;#font[32]{d}#varphir  #font[22]{(mrad)}   ";
-    //"CyMBaL;#font[32]{X}  #font[22]{(#mum)}   ";
+      "Outer#font[32]{U};d#font[32]{Rc#delta#scale[1.2]{#varphi}}  #font[22]{(#mum)}   "; size_t lT = strlen(hT)+1;
     string dS(detectorNames[idet]);
-    if (0x1<<idet&MPGDs) dS += string(coordNames[iStrip-1][idet]);
+    if (isRec && // hence one histo per strip's coord., as opposed to isRec =0
+	(0x1<<idet&MPGDs)) // then add strip's coord.-name as a distinctive tag
+      dS += string(coordNames[iStrip-1][idet]);
     const char *dN = dS.c_str();
     // ***** LOOP ON HISTOS
     snprintf(hN,lN,"%s%s",tag,"X");
@@ -386,17 +396,24 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     }
     else if (idet==1) { // If Outer
       snprintf(hN,lN,"%s%s",tag,"Rr");
-      snprintf(hT,lT,"%s;#font[32]{%s}  #font[22]{(mm)}   ",dN,"Rc#delta#varphi");
+      snprintf(hT,lT,"%s;#font[32]{%s}  #font[22]{(mm)}   ",dN,
+	       "Rc#delta#scale[1.2]{#varphi}");
       hs.Rr =  new TH2D(hN,hT,1024,RMn, RMx,nDivs,divMn,divMx);
+      snprintf(hN,lN,"%s%s",tag,"Ur");
+      snprintf(hT,lT,"%s;#font[32]{%c}r  #font[22]{(mm)}   ",dN,'U');
+      hs.Ur =  new TH2D(hN,hT,1024,-dUr,dUr,nDivs,divMn,divMx);
+      snprintf(hN,lN,"%s%s",tag,"Vr");
+      snprintf(hT,lT,"%s;#font[32]{%c}r  #font[22]{(mm)}   ",dN,'V');
+      hs.Vr =  new TH2D(hN,hT,1024,-dUr,dUr,nDivs,divMn,divMx);
     }
     snprintf(hN,lN,"%s%s",tag,"Z");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'Z');
     hs.Z =   new TH2D(hN,hT,256,ZMn, ZMx,nDivs,divMn,divMx);
     snprintf(hN,lN,"%s%s",tag,"phi");
-    snprintf(hT,lT,"%s;#varphi  #font[22]{(rad)}   ",dN);
+    snprintf(hT,lT,"%s;#scale[1.2]{#varphi}  #font[22]{(rad)}   ",dN);
     hs.phi = new TH2D(hN,hT,512,-pi,  pi,nDivs,divMn,divMx); 
     snprintf(hN,lN,"%s%s",tag,"phir");
-    snprintf(hT,lT,"%s;#varphir  #font[22]{(rad)}   ",dN);
+    snprintf(hT,lT,"%s;#scale[1.2]{#varphi}r  #font[22]{(rad)}   ",dN);
     hs.phir = new TH2D(hN,hT,512,-pi,  pi,nDivs,divMn,divMx); 
     snprintf(hN,lN,"%s%s",tag,"th");
     snprintf(hT,lT,"%s;#theta  #font[22]{(rad)}   ",dN);
@@ -405,10 +422,15 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     snprintf(hT,lT,"%s;module#",dN);
     hs.mod = new TH2D(hN,hT,nMods,modMn-.5,modMn+nMods-.5,nLayers,divMn,divMx);
     TH2D *h2s[] = {hs.X,hs.Y,hs.RA,hs.R,hs.Z,hs.phi,hs.th,hs.mod,
-		   hs.Rr}; // CyMBaL/Outer specific
+		   hs.Rr,        // CyMBaL/Outer specific
+		   hs.Ur,hs.Vr}; // Outer specific
+    unsigned int flags[] =
+      /* */       { 0xf, 0xf,  0xf, 0xf, 0xf,   0xf,  0xf,   0xf,
+		    0x3,
+		    0x2, 0x2};
     int nh2s = sizeof(h2s)/sizeof(TH2D*);
-    if (idet>=2) nh2s -= 1; // If !CyMBaL!Outer, cancel hs.Rr
     for (int ih = 0; ih<nh2s; ih++) {
+      if (!(0x1<<idet&flags[ih])) continue;
       TAxis *ax = h2s[ih]->GetXaxis();
       ax->SetNdivisions(505);
       ax->SetLabelSize(.05); ax->SetLabelOffset(.006);
@@ -446,7 +468,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     sT += string(hT); const char *hTZR = sT.c_str();
     hs.ZR = new TH2D(hN,hTZR,256,ZMn,ZMx,256,RMn,RMx);
     snprintf(hN,lN,"%s%s",tag,"thphi");
-    snprintf(hT,lT,"%s;#varphi  #font[22]{(rad)}   ",dN);
+    snprintf(hT,lT,"%s;#scale[1.2]{#varphi}  #font[22]{(rad)}   ",dN);
     sT = string(hT);
     snprintf(hT,lT,";#theta  #font[22]{(rad)}");
     sT += string(hT); const char *hTthphi = sT.c_str();
@@ -472,64 +494,93 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       int i01 = tag[1]=='0' ? 0 : 1;
       Resids &rs = resHs[i01][idet]; rs.dir = dSD;
       // ***** RANGES
-      double dx = idet<2 ? 800 /* All MPGDs */ : 25 /* Si */; // in µm
-      double dr = dx, dd = dx;
-      double dz = dr;
+      double dx = idet<2 ? 512 /* All MPGDs */ : 24 /* Si */; // in µm
+      double dr = dx, dd = dx ,dz = dx, du = dx, dv = dx;
       double dphi = .8; // in mrad
       if (0x1<<idet&MPGDs) { // ***** MPGDs: UPDATE RANGES DEPENDING ON iStrip
 	if (idet==0) { // CyMBaL
 	  // From: epic/compact/tracking/mpgd_barrel.xml
 	  // <constant name="MMModuleLength"                         value="61.0*cm"/>
-	  // 256-16-16 bins for the core part, 2x16 bins outside 
-	  double modL = 610, deltaZ = 610./224, dz_phi = modL/2+16*deltaZ;
-	  // For phi, X and Y, no way to have limit at bin edge, since we have
+	  // 256-16-16 bins for the core part, 2x32 bins outside 
+	  double modL = 610, deltaZ = modL/192, dz_phi = modL/2+32*deltaZ;
+	  // For phi, X, etc... no way to have limit at bin edge, since we have
 	  // 2 distinct sensitive surface radii, viz. 55.6755 and 57.8755
-	  double dphi_Z = 2*pi/8/2; dphi_Z *= 1.10;
+	  double dphi_Z = 2*pi/8/2; dphi_Z *= 1.20;
 	  double RsurfMx = 578.755, dx_Z = dphi_Z*RsurfMx;
 	  dz_phi *= 1000; dx_Z *= 1000; dphi_Z *= 1000; // mm -> µm, rad -> mrad
 	  if (iStrip==1) dz = dz_phi;
-	  else         { dphi = dphi_Z; dx = dx_Z; }
+	  else { dphi = dphi_Z; dx = dx_Z; }
 	  dd = sqrt(4*dx_Z*dx_Z+dz_phi*dz_phi);
+	}
+	else if (idet==1) { // Outer
+	  //<constant name="MPGDOuterBarrelModule_length"                  value="0.5*(MPGDOuterBarrelModule_zmin1 + MPGDOuterBarrelModule_zmin2 + MPGDOuterBarrelModule_zoverlap)"/>
+	  //<constant name="MPGDOuterBarrelModule_zoverlap"                value="0*MPGDOuterBarrelFrame_width"/>
+	  double zmin1 = 1640.5, zmin2 = 1740.5, modL = (zmin1+zmin2)/2;
+	  //<constant name="MPGDOuterBarrelModule_width"                   value="36.0*cm"/>
+	  double modW = 360;
+	  // 256-16-16 bins for the core part, 2x32 bins outside 
+	  double stripRange = sqrt(2)*(modW+modL)/2;
+	  double deltaUV = stripRange/192, dUV = stripRange/2+32*deltaUV;
+	  dUV *= 1000;
+	  if (iStrip==1) dv = dUV;
+	  else           du = dUV;
+	  double deltaX = (modW+modL)/192; dx = modW/2+32*deltaX; dx *= 1000;
+	  dz = dx;
+	}
+	else if (idet==3) { // Si
+	  dphi = 0.08; 
 	}
       }
       double dRr = 80;
       snprintf(hN,lN,"%c%s",'d',"X");
-      snprintf(hT,lT,"%s;#font[32]{%s}  #font[22]{(#mum)}   ",dN,"dX");
+      snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'X');
       rs.X =   new TH1D(hN,hT,256,-dx,dx);
       snprintf(hN,lN,"%c%s",'d',"Y");
-      snprintf(hT,lT,"%s;#font[32]{%s}  #font[22]{(#mum)}   ",dN,"dY");
+      snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'Y');
       rs.Y =   new TH1D(hN,hT,256,-dx,dx);
       snprintf(hN,lN,"%c%s",'d',"R");
-      snprintf(hT,lT,"%s;#font[32]{%s}  #font[22]{(#mum)}   ",dN,"dR");
+      snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'R');
       rs.R =   new TH1D(hN,hT,256,-dr,dr);
       if      (idet==0) { // If CyMBaL
 	snprintf(hN,lN,"%c%s",'d',"Rr");
-	snprintf(hT,lT,"%s;#font[32]{%s}r  #font[22]{(#mum)}   ",dN,"dR");
+	snprintf(hT,lT,"%s;d#font[32]{%c}r  #font[22]{(#mum)}   ",dN,'R');
 	rs.Rr =   new TH1D(hN,hT,256,-dRr,dRr);
       }
       else if (idet==1) { // If Outer
 	snprintf(hN,lN,"%c%s",'d',"Rr");
-	snprintf(hT,lT,"%s;#font[32]{%s}  #font[22]{(#mum)}   ",dN,"dRc#delta#varphi");
+	snprintf(hT,lT,"%s;d#font[32]{%s}  #font[22]{(#mum)}   ",dN,
+		 "Rc#delta#scale[1.2]{#varphi}");
 	rs.Rr =   new TH1D(hN,hT,256,-dRr,dRr);
+	snprintf(hN,lN,"%c%s",'d',"Ur");
+	snprintf(hT,lT,"%s;d#font[32]{%c}r  #font[22]{(#mum)}   ",dN,'U');
+	rs.Ur =   new TH1D(hN,hT,256,-du,du);
+	snprintf(hN,lN,"%c%s",'d',"Vr");
+	snprintf(hT,lT,"%s;d#font[32]{%c}r  #font[22]{(#mum)}   ",dN,'V');
+	rs.Vr =   new TH1D(hN,hT,256,-dv,dv);
       }
       snprintf(hN,lN,"%c%s",'d',"Z");
-      snprintf(hT,lT,"%s;#font[32]{%s}  #font[22]{(#mum)}   ",dN,"dZ");
+      snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'Z');
       rs.Z =   new TH1D(hN,hT,256,-dz,dz);
       snprintf(hN,lN,"%c%s",'d',"dist");
-      snprintf(hT,lT,"%s;#font[32]{%s}  #font[22]{(#mum)}   ",dN,"dD");
+      snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'D');
       rs.D =   new TH1D(hN,hT,512,-dd,dd);
       snprintf(hN,lN,"%c%s",'d',"phi");
-      snprintf(hT,lT,"%s;#font[32]{d}#varphi  #font[22]{(mrad)}   ",dN);
+      snprintf(hT,lT,"%s;d#scale[1.2]{#varphi}  #font[22]{(mrad)}   ", dN);
       rs.phi = new TH1D(hN,hT,512,-dphi,dphi); 
       snprintf(hN,lN,"%c%s",'d',"phir");
-      snprintf(hT,lT,"%s;#font[32]{d}#varphir  #font[22]{(mrad)}   ",dN);
+      snprintf(hT,lT,"%s;d#scale[1.2]{#varphi}r  #font[22]{(mrad)}   ",dN);
       rs.phir = new TH1D(hN,hT,512,-dphi,dphi); 
-      TH1D *r1s[] = {rs.X,rs.Y,rs.R,rs.Z,rs.D,rs.phi,
-		     rs.Rr,rs.phir}; // CyMBaL specific
+      TH1D *r1s[] =          {rs.X, rs.Y,rs.R,rs.Z,rs.D,rs.phi,
+			      rs.Rr,         // MPGD specific
+			      rs.phir,       // CyMBaL specific
+			      rs.Ur,rs.Vr};  // Outer specific
+      unsigned int flags[] = { 0xf,  0xf, 0xf, 0xf, 0xf,   0xf,
+			       0x3,
+			       0x1,
+			       0x2,  0x2};
       int nr1s = sizeof(r1s)/sizeof(TH1D*);
-      if      (idet>=2) nr1s -= 2; // If !CyMBaL, cancel rs.Rr, rs.phir
-      else if (idet==1) nr1s -= 1; // If !CyMBaL, cancel        rs.phir
       for (int ih = 0; ih<nr1s; ih++) {
+	if (!(0x1<<idet&flags[ih])) continue;
 	TAxis *ax = r1s[ih]->GetXaxis();
 	ax->SetNdivisions(510);
 	ax->SetLabelSize(.05); ax->SetLabelOffset(.006);
@@ -742,8 +793,14 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of MPGDs phi/Z 
     // ***** LOOP ON RESIDUALS (in subset)
     Resids &rs = resHs[strip][idet]; rs.dir->cd();
     TH1D *r1s[4] = {rs.X, rs.Z, rs.phi, rs.R};
-    if      (idet==0) { r1s[2] = rs.phir; r1s[3] = rs.Rr; }
-    else if (idet==1) r1s[3] = rs.Rr; 
+    if      (idet==0) { // CyMBaL: precision is on 'phir' or 'Z' alternatively,
+      // depending upon strip's coord. 'Rr': let's check it's a Dirac.
+      r1s[2] = rs.phir;               r1s[3] = rs.Rr;
+    }
+    else if (idet==1) { // Outer:  precision is on 'Ur' or 'Vr' alternatively,
+      // depending upon strip's coord. 'Rr' = "Rcos(dphi)": check it's a Dirac. 
+      r1s[1] = rs.Ur; r1s[2] = rs.Vr; r1s[3] = rs.Rr;
+    }
     for (int ih = 0; ih<4; ih++) {
       TH1D *h1 = r1s[ih];
       if (col>=0) h1->SetLineColor(col);
