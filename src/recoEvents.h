@@ -6,9 +6,9 @@
 
 /*
 // USAGE
-const char tag[7] = "struv";
-TChain *events = new TChain("events"); char fName[] = "podio.sensor.1234.root"; size_t lN = strlen(fName)+1; int seeds[] = {1234,4567,8910,1112}; int nSeeds = sizeof(seeds)/sizeof(int);
-for (int i = 0; i<nSeeds; i++) { snprintf(fName,lN,"podio.%s.%4d.root",tag,seeds[i]); events->Add(fName); }
+const char tag[7] = "struv", nEvtsTag[3] = "20"; 
+TChain *events = new TChain("events"); char fName[] = "podio.sensor.1234.20,root"; size_t lN = strlen(fName)+1; int seeds[] = {1234,4567,8910,1112}; int nSeeds = sizeof(seeds)/sizeof(int);
+for (int i = 0; i<nSeeds; i++) { snprintf(fName,lN,"podio.%s.%s.%4d.root",tag,nEvtsTag,seeds[i]); events->Add(fName); }
 .L ../recoEvents/install/librecoEvents.so
 recoEvents ana(events,0xf); // Instantiate for all of (0x1:CyMBaL,0x2:Outer,0x4:Vertex,0x8:Si)
 ana.select = new TTreeFormula("select", "@MCParticles.size()==1", events);// Add rejection cut
@@ -74,6 +74,13 @@ void SetPaveText(TH1 *h, int mode = 0);
 
 class recoEvents: public TNamed {
 public :
+   recoEvents(TTree *tree,
+	      // Detector patterns: 0x1=CyMBaL, 0x2=Outer, 0x4=Vertex, 0x8=Si
+	      // mode: Process detector
+	      // hasStrips: If not set, detector has pixels.
+	      unsigned int mode = 0x1, unsigned int hasStrips = 0x3);
+   virtual ~recoEvents();
+
    TTree          *fChain;   //!pointer to the analyzed TTree or TChain
    Int_t           fCurrent; //!current Tree number in a TChain
 
@@ -82,6 +89,7 @@ public :
    // or TDirectory's.
    static unsigned int nObjCreated; unsigned int iObjCreated;
    unsigned int processingMode;
+   unsigned int stripMode;  // Pattern of detectors w/ strip readout
    int verbose;
 
    int getDetHit(int idet, int ih, double &X, double &Y, double &Z,
@@ -91,7 +99,6 @@ public :
 #define N_DETs 4
    const char *detectorNames[N_DETs];
    // STRIP SEGMENTATION
-   unsigned int MPGDs;  // Pattern of detectors being MPGDs
    const char *coordNames[2][N_DETs];
    
    // ***** HISTOS
@@ -105,12 +112,13 @@ public :
 		   const Vector3f &pos, const Vector3d &psim, unsigned long cellID);
    void parseCellID(int idet, unsigned long ID,
 		    unsigned int &module, unsigned int &div, unsigned int &strip);
+   bool parseStrip(int idet, int simOrRec, unsigned int &strip);
    void printHit(int idet,
 		 double X, double Y, double Z, unsigned long cellID);
    static constexpr int violet = kMagenta+2, bleu = kBlue+1, vert = kGreen+2;
    static constexpr int jaune = kOrange+0, orange = kOrange+1, rouge  = kRed+0;
    static constexpr int marron = 50, gris   = 11;
-   void DrawphithZR(int iSimRec = 0 /* 0: sim, 1: rec, 2: rec 2nd coord of MPGD */,
+   void DrawphithZR(int iSimRec = 0 /* 0: sim, 1: rec, 2: rec 2nd coord of STRIP */,
 		    unsigned int detectorPattern = 0xf, bool decompose = false);
    void DrawModules(int iSimRec = 0, unsigned int detectorPattern = 0x1, bool decompose = false);
    void DrawResiduals(int iRec = 0,   unsigned int detectorPattern = 0x1, TCanvas *cPrv = 0, int col = -1);
@@ -134,8 +142,6 @@ public :
    vector<EventHeaderData> *eventHeader;
    TBranch *EventHeader;
 
-   recoEvents(TTree *tree, unsigned int mode = 0x1);
-   virtual ~recoEvents();
    virtual void     Loop(int nEvents = 0);
 
  private:
@@ -152,13 +158,21 @@ public :
 #endif
 
 #ifdef recoEvents_cxx
-recoEvents::recoEvents(TTree *tree, unsigned int mode) : fChain(0) 
+recoEvents::recoEvents(TTree *tree, unsigned int mode, unsigned int hasStrips) : fChain(0) 
 {
   // Init global settings
   processingMode = mode; verbose = 0; select = 0;
   requireQuality = 0; // Default: do not require "SimTrackerHit::quality"
   requireModule = -1;  // Default: all staves
-
+  // Check that arg. "hasStrips" fits the pattern of MPGDs
+  unsigned int MPGDs = 0x3; // CyMBaL and Outer
+  if ((hasStrips&MPGDs)!=hasStrips) {
+    printf("** recoEvents: Invalid arg. <hasStrips>(=0x%x): does not fit pattern of MPGDs(=0x%x)! => Aborting...\n",
+	   hasStrips,MPGDs);
+    return;
+  }
+  stripMode = hasStrips;
+  
   iObjCreated = nObjCreated++;
   Init(tree);
 }
@@ -232,13 +246,12 @@ void recoEvents::Init(TTree *tree)
 
    // ***** DETECTOR NAMES
    const char *detNs[N_DETs] = {"CyMBaL","Outer","Vertex","Si"};
-   MPGDs = 0x3; // Temporarily only CyMBaL
    const char *coordNs[2][2] = {{"#scale[1.2]{#varphi}","#font[32]{Z}"},
 				{"#font[32]{U}","#font[32]{V}"}};
-   MPGDs &= 0x3; // Enforce internal consistency: two MPGDs and only two
+   // ***** STRIPS
    for (int idet = 0; idet<N_DETs; idet++) {
      detectorNames[idet] = detNs[idet];
-     if (0x1<<idet&MPGDs) {
+     if (0x1<<idet&stripMode) {
        coordNames[0][idet] = coordNs[idet][0];
        coordNames[1][idet] = coordNs[idet][1];
      }
@@ -280,9 +293,9 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     exit(1);
   }
   bool isRec = tag[0]=='r';
-  // ***** MPGDs
+  // ***** STRIPS
   int iStrip = 0;
-  if (!strcmp(tag,"r1")) iStrip = 2; // 2nd coordinate, for MPGDs
+  if (!strcmp(tag,"r1")) iStrip = 2; // 2nd coordinate, for STRIPS
   else                   iStrip = 1;
 
   // ***** BASE DIRECTORY
@@ -293,16 +306,16 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
   // ********** LOOP ON DETECTORS
   for (int idet = 0; idet<N_DETs; idet++) {
     if (!(0x1<<idet&processingMode)) continue;
-    if (iStrip==2 && !(0x1<<idet&MPGDs)) // 2nd coordinate: skip if not MPGD
+    if (iStrip==2 && !(0x1<<idet&stripMode)) // 2nd coordinate: skip if not STRIP
       continue;
     Histos &hs = Hs[idet];
     // ***** SUB-DIRECTORY
     string sdS = string("d")+string(detectorNames[idet]);
-    if ((0x1<<idet&MPGDs) && iStrip==2) sdS += string("2"); 
+    if ((0x1<<idet&stripMode) && iStrip==2) sdS += string("2"); 
     const char *sdN = sdS.c_str();
     TDirectory *dSD = dSave->mkdir(sdN); dSD->cd(); hs.dir = dSD;
     printf(" * BookHistos: TDirectory \"%s\"",gDirectory->GetName());
-    if ((0x1<<idet&MPGDs) && iStrip==2) {
+    if ((0x1<<idet&stripMode) && iStrip==2) {
       string sdT("2nd coord."); gDirectory->SetTitle(sdT.c_str());
       printf(" - %s",gDirectory->GetTitle());
     }
@@ -373,7 +386,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       "Outer#font[32]{U};d#font[32]{Rc#delta#scale[1.2]{#varphi}}  #font[22]{(#mum)}   "; size_t lT = strlen(hT)+1;
     string dS(detectorNames[idet]);
     if (isRec && // hence one histo per strip's coord., as opposed to isRec =0
-	(0x1<<idet&MPGDs)) // then add strip's coord.-name as a distinctive tag
+	(0x1<<idet&stripMode)) // then add strip's coord.-name as a distinctive tag
       dS += string(coordNames[iStrip-1][idet]);
     const char *dN = dS.c_str();
     // ***** LOOP ON HISTOS
@@ -497,7 +510,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       double dx = idet<2 ? 512 /* All MPGDs */ : 24 /* Si */; // in µm
       double dr = dx, dd = dx ,dz = dx, du = dx, dv = dx;
       double dphi = .8; // in mrad
-      if (0x1<<idet&MPGDs) { // ***** MPGDs: UPDATE RANGES DEPENDING ON iStrip
+      if (0x1<<idet&stripMode) { // ***** STRIPS: UPDATE RANGES DEPENDING ON iStrip
 	if (idet==0) { // CyMBaL
 	  // From: epic/compact/tracking/mpgd_barrel.xml
 	  // <constant name="MMModuleLength"                         value="61.0*cm"/>
@@ -527,9 +540,9 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	  double deltaX = (modW+modL)/192; dx = modW/2+32*deltaX; dx *= 1000;
 	  dz = dx;
 	}
-	else if (idet==3) { // Si
-	  dphi = 0.08; 
-	}
+      }
+      if (idet==3) { // Si: Looks like it has a very fine resolution in phi
+	dphi = 0.08; 
       }
       double dRr = 80;
       snprintf(hN,lN,"%c%s",'d',"X");
@@ -621,12 +634,12 @@ Int_t recoEvents::Cut(Long64_t entry)
 // returns -1 otherwise.
    return 1;
 }
-void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of MPGD
+void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of STRIP
 			     unsigned int detectorPattern, bool decompose)
 {
   // ***** PARSE <iSimRec> ARG.
   if (iSimRec<0 || 2<iSimRec) {
-    printf("** DrawphithZR: Unvalid <iSimRec> arg.(=%d): neither 0(=sim) nor 1(=rec) nor 2(=2nd coord of MPGD)\n",iSimRec); return;
+    printf("** DrawphithZR: Unvalid <iSimRec> arg.(=%d): neither 0(=sim) nor 1(=rec) nor 2(=2nd coord of STRIP)\n",iSimRec); return;
   }
   TDirectory *dSave = gDirectory;
   unsigned int pat = processingMode&detectorPattern;
@@ -635,9 +648,9 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
     Histos *Hs; switch (iSimRec) {
     case 0: Hs = simHs;    break;
     case 1: Hs = recHs[0]; break;
-    case 2: if (!(0x1<<idet&MPGDs)) {
-	printf("** DrawphithZR: requesting <iSimRec> = 2 for idet = 0x%x (\"%s\") which is not among MPGDs(=0x%x)\n",
-	       0x1<<idet,detectorNames[idet],MPGDs); continue;
+    case 2: if (!(0x1<<idet&stripMode)) {
+	printf("** DrawphithZR: requesting <iSimRec> = 2 for idet = 0x%x (\"%s\") which is not among detectors w/ strips(=0x%x)\n",
+	       0x1<<idet,detectorNames[idet],stripMode); continue;
       }
       /* */ Hs = recHs[1]; break;
     default: printf("** DrawphithZR: Unvalid <iSimRec> (=%d, not in [0,2])\n",
@@ -711,40 +724,49 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
 }
 void recoEvents::DrawModules(int iSimRec, unsigned int detectorPattern, bool decompose)
 {
-  // ***** DRAW module# FOR EACH DETECTOR IN detectorPattern
-  // ***** PARSE <iSimRec> ARG.
+  // ********** DRAW module# FOR EACH DETECTOR IN detectorPattern
+  // ***** PARSE ARG.S
   if (iSimRec<0 || 2<iSimRec) {
-    printf("** DrawphithZR: Unvalid <iSimRec> arg.(=%d): neither 0(=sim) nor 1(=rec) nor 2(=2nd coord of MPGD)\n",iSimRec); return;
+    printf("** DrawModules: Unvalid <iSimRec> arg.(=%d): neither 0(=sim) nor 1(=rec) nor 2(=2nd coord of STRIP)\n",iSimRec); return;
+  }
+  unsigned int pat = processingMode&detectorPattern;
+  if (!pat) {
+    printf("** DrawModules: None of the processed detectors(=0x%x) in arg. <detectorPattern>(=0x%x)\n",
+	   processingMode,detectorPattern);
+    return;
   }
   TDirectory *dSave = gDirectory;
-  unsigned int pat = processingMode&detectorPattern;
   for (int idet = 0; idet<N_DETs; idet++) {
+    // ***** LOOP ON DETECTORS
     if (!(0x1<<idet&pat)) continue;
     Histos *Hs; switch (iSimRec) {
     case 0: Hs = simHs; break;
     case 1: Hs = recHs[0]; break;
-    case 2: if (!(0x1<<idet&MPGDs)) {
-	printf("** DrawModules: requesting <iSimRec> = 2 for idet = 0x%x (\"%s\") which is not among MPGDs(=0x%x)\n",
-	       0x1<<idet,detectorNames[idet],MPGDs); continue;
+    case 2: if (!(0x1<<idet&stripMode)) {
+	printf("** DrawModules: requesting <iSimRec> = 2 for idet = 0x%x (\"%s\") which is not among detectors w/ strips(=0x%x)\n",
+	       0x1<<idet,detectorNames[idet],stripMode); continue;
       }
       /* */ Hs = recHs[1]; break;
-    default: printf("** DrawphithZR: Unvalid <iSimRec> (=%d, not in [0,2])\n",
+    default: printf("** DrawModules: Unvalid <iSimRec> (=%d, not in [0,2])\n",
 		    iSimRec); return;
     }
     Histos &hs = Hs[idet]; hs.dir->cd();
     TH2D *h2 = hs.mod;
     TH1D *hproj = h2->ProjectionX(); hproj->Draw();
-    hproj->SetMinimum(0); // Useful for hs.phi
+    hproj->SetMinimum(0);
+    // Port TH2D's title to proj. Else title displayed is always that of the first module histo drawn!? As evidenced by instruction below (commented out).
+    //printf("<%s> <%s>\n",hproj->GetName(),hproj->GetTitle());
+    hproj->SetTitle(h2->GetTitle());
     TAxis *ay = hproj->GetYaxis();
     ay->SetNdivisions(505);
     ay->SetLabelSize(.05); ay->SetLabelOffset(.006);
     ay->SetMaxDigits(2);
-    if (idet!=0 && decompose) {
+    int nDivs = h2->GetNbinsY();
+    if (nDivs>1 && decompose) {
       char tag[] = "_3";
       int col1s[2] = {vert,orange};
       int col2s[3] = {bleu,vert,rouge};
       int *cols = idet==1 ? col1s : col2s;
-      int nDivs = h2->GetNbinsY();
       for (int div = 0; div<nDivs; div++) {
 	snprintf(tag,3,"_%d",div); string hS = h2->GetName(); hS += tag;
 	TH1D *h1 = h2->ProjectionX(hS.c_str(),div+1,div+1);
@@ -755,27 +777,32 @@ void recoEvents::DrawModules(int iSimRec, unsigned int detectorPattern, bool dec
   }
   dSave->cd();
 }
-void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of MPGDs phi/Z U/V
+void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z U/V
 			       unsigned int detectorPattern,
 			       TCanvas *cPrv, int col) // Superimpose on pre-existing TCanvas cPrv
 {
   // ********** DRAW (subset of) RESIDUALS FOR EACH DETECTOR IN detectorPattern
-  // ***** PARSE <iRec> ARG.
+  // ***** PARSE ARG.S
   if (iRec<1 || 2<iRec) {
     printf("** DrawResiduals: Unvalid <iRec> arg.(=%d): neither 1(=1st coord.) nor 2(=2nd coord.)\n",iRec); return;
   }
   int strip = iRec-1;
+  unsigned int pat = processingMode&detectorPattern;
+  if (!pat) {
+    printf("** DrawResiduals: None of the processed detectors(=0x%x) in arg. <detectorPattern>(=0x%x)\n",
+	   processingMode,detectorPattern);
+    return;
+  }
   // ***** CONTEXT
   gStyle->SetOptStat(1110);
   string prvFormat = string(gStyle->GetStatFormat());
   TDirectory *dSave = gDirectory;
-  unsigned int pat = processingMode&detectorPattern;
   // ***** LOOP ON DETECTORS
   for (int idet = 0; idet<N_DETs; idet++) {
     if (!(0x1<<idet&pat)) continue;
-    if (strip && !(0x1<<idet&MPGDs)) { // 2nd coordinate: skip if not MPGD
-      printf("** DrawResiduals: requesting <iRec> = 2 for idet = 0x%x (\"%s\") which is not among MPGDs(=0x%x)\n",
-	     0x1<<idet,detectorNames[idet],MPGDs); continue;
+    if (strip && !(0x1<<idet&stripMode)) { // 2nd coordinate: skip if not STRIP
+      printf("** DrawResiduals: requesting <iRec> = 2 for idet = 0x%x (\"%s\") which is not among detectors w/ strips(=0x%x)\n",
+	       0x1<<idet,detectorNames[idet],stripMode); continue;
     }
     TCanvas *cResids; if (!cPrv) {
       // ***** CANVAS
@@ -807,6 +834,11 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of MPGDs phi/Z 
       cResids->cd(ih+1);
       if (cPrv) { h1->Draw("sames"); SetPaveText(h1,1); }
       else      { h1->Draw();        SetPaveText(h1,0); }
+      //  Ndivisions policy: 505 -> 510, when Xaxis labels come close to the edge and collide w/ the Yaxis 0 label
+      TAxis *ax = h1->GetXaxis();
+      double xLabel = ax->GetXmax()/pow(10,int(log10(ax->GetXmax())));
+      if (fabs(xLabel-5)<.3)
+	ax->SetNdivisions(515);
     }
   }
   gStyle->SetStatFormat(prvFormat.c_str());

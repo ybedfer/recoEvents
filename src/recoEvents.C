@@ -162,6 +162,8 @@ void recoEvents::fillHit(int simOrRec, int idet,
 			 double X, double Y, double Z, unsigned long cellID)
 {
   unsigned int module, div, strip; parseCellID(idet,cellID,module,div,strip);
+  // ***** STRIP: Convert stripID -> strip. Is it valid? 
+  if (!parseStrip(idet,simOrRec,strip)) return;
   if (requireModule>=0 && module!=requireModule) return;
   double R2 = X*X+Y*Y, R = sqrt(R2);
   double phi = atan2(Y,X);
@@ -204,6 +206,8 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
   double D = sqrt(R2+Z*Z), Ds = sqrt(Rs2+Zs*Zs), dD = 1000*(D-Ds);
   if (verbose&0x2) printf(" dX,dY,dZ: %.2f,%.2f,%.2f",dX,dY,dZ);
   unsigned int module, div, strip; parseCellID(idet,cellID,module,div,strip);
+  // ***** STRIP: Convert stripID -> strip. Is it valid? 
+  if (!parseStrip(idet,1,strip)) return;
   Resids &rs = resHs[strip][idet];
   rs.X->Fill(dX); rs.Y->Fill(dY); rs.Z->Fill(dZ); rs.R->Fill(dR); rs.D->Fill(dD);
   rs.phi->Fill(dphi);
@@ -292,8 +296,8 @@ void getReducedOuter(double X, double Y, double Z, unsigned int module,
   */
 }
 void recoEvents::parseCellID(int idet, unsigned long ID,
-			     unsigned int &module, unsigned int &div,
-			     unsigned int &strip)
+			    unsigned int &module, unsigned int &div,
+			    unsigned int &strip)
 {
   // ***** MODULE
   // mpgd_barrel.xml:      <id>system:8,layer:4,module:12, ...
@@ -301,6 +305,7 @@ void recoEvents::parseCellID(int idet, unsigned long ID,
   // silicon_barrel.xml:   <id>system:8,layer:4,module:12, ...
   // vertex_barrel.xml:    <id>system:8,layer:4,module:12, ...
   // => All have same module specif.
+  // system: CyMBal = 61, Outer = 64, ... (It's not checked that this is what we get in "ID")
   module = (ID>>12)&0xfff;
   // ***** divISION
   //       iRec = (strip coordinate: 0 = measurement coord, 1 = orthogonal
@@ -311,23 +316,49 @@ void recoEvents::parseCellID(int idet, unsigned long ID,
       int sector = module/8, iphi = module%8; module = 8*sector+(4+iphi)%8;
     }
     div = module;
-    strip = ID>>30&0x3; strip -= 1;
+    strip = ID>>30&0x3;
   }
   else if (idet==1) { // µRWELL
     div = module%2;      // "div" = parity
-    strip = ID>>30&0x3; strip -= 1;
+    strip = ID>>30&0x3;
   }
   else if (idet==2) {   // Vertex
     int layer = (ID>>8)&0xf; // "div" = log_2(layer)
     int bit; for (bit = 0, div = 3 /* unphysical default */; bit<=2; bit++) {
       if ((0x1<<bit&layer)==layer) { div = bit; break; }
     }
-    strip = 0; // Not yet implemented
+    strip = 0; // Not relevant
   }
   else {
     div = ID%2;
-    strip = 0; // Not yet implemented
+    strip = 0; // Not relevant
   }
+}
+bool recoEvents::parseStrip(int idet, int simOrRec, unsigned int &strip)
+{
+  // - Convert input stripID (= 0x1 or 0x2) to "strip" (= 0 or 1)
+  // - Check it's valid: Depends upon...
+  // ..."stripMode" of current "idet"
+  // ...whether it's simHit or recHit 
+  bool hasStrips = stripMode&0x1<<idet;
+  if (simOrRec && hasStrips) {
+    strip -= 1;
+    if (strip<0 || 1<strip) {
+      printf("** parseStrip: (stripMode=0x%x) idet=%d stripID=0x%x => strip = %d not in [0,1]\n",
+	     stripMode,idet,strip+1,strip);
+      strip = 0;
+      return false;
+    }
+  }
+  else {
+    if (strip!=0) {
+      printf("** fillHit: (stripMode=0x%x) idet=%d stripID=0x%x not =0\n",
+	     stripMode,idet,strip);
+      strip = 0;
+      return false;
+    }
+  }
+  return true;
 }
 void recoEvents::printHit(int idet,
 			  double X, double Y, double Z, unsigned long cellID)
