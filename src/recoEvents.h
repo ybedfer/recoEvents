@@ -75,10 +75,11 @@ void SetPaveText(TH1 *h, int mode = 0);
 class recoEvents: public TNamed {
 public :
    recoEvents(TTree *tree,
-	      // Detector patterns: 0x1=CyMBaL, 0x2=Outer, 0x4=Vertex, 0x8=Si
-	      // mode: Process detector
+	      // Detector pattern: 0x1=CyMBaL, 0x2=Outer, 0x4=Vertex, 0x8=Si
+	      // mode: Processed detectors
 	      // hasStrips: If not set, detector has pixels.
-	      unsigned int mode = 0x1, unsigned int hasStrips = 0x3);
+	      unsigned int mode = 0x1, unsigned int hasStrips = 0x3,
+	      bool simulationOnly = false);
    virtual ~recoEvents();
 
    TTree          *fChain;   //!pointer to the analyzed TTree or TChain
@@ -88,8 +89,9 @@ public :
    // is specific to an instance and used to give distinct names to its TCanvas'
    // or TDirectory's.
    static unsigned int nObjCreated; unsigned int iObjCreated;
-   unsigned int processingMode;
+   unsigned int processedDetectors;
    unsigned int stripMode;  // Pattern of detectors w/ strip readout
+   bool reconstruction;
    int verbose;
 
    int getDetHit(int idet, int ih, double &X, double &Y, double &Z,
@@ -100,11 +102,17 @@ public :
    const char *detectorNames[N_DETs];
    // STRIP SEGMENTATION
    const char *coordNames[2][N_DETs];
-   
+   // Depending upon setup, MPGDs can have more than one sensitive surfaces.
+   // Can be 1, 2 or 5.
+   int nSensitiveSurfaces;
+
    // ***** HISTOS
    TTreeFormula *select; // Provides for specifying a rejection cut.
    int requireQuality; // "SimTrackerHit::quality" required for filling "simHs" and residuals
    int requireModule; // If >=0, select module "requireModule" (D=-1=All)
+   // Cut on #SimHits per detector (and, not yet implemented, per MC particle)
+   // >0: #SimHits=="requireNHits", <0: #SimHits>="requireNHits"
+   int requireNHits;
    void BookHistos(Histos *Hs, const char *tag);
    void fillHit(int iSimRec, int idet,
 		double X, double Y, double Z, unsigned long cellID);
@@ -158,12 +166,15 @@ public :
 #endif
 
 #ifdef recoEvents_cxx
-recoEvents::recoEvents(TTree *tree, unsigned int mode, unsigned int hasStrips) : fChain(0) 
+recoEvents::recoEvents(TTree *tree, unsigned int mode, unsigned int hasStrips,
+		       bool simulationOnly) : fChain(0) 
 {
   // Init global settings
-  processingMode = mode; verbose = 0; select = 0;
+  processedDetectors = mode; verbose = 0; select = 0;
+  reconstruction = !simulationOnly;
   requireQuality = 0; // Default: do not require "SimTrackerHit::quality"
   requireModule = -1;  // Default: all staves
+  requireNHits = 0; // Default: no requirement
   // Check that arg. "hasStrips" fits the pattern of MPGDs
   unsigned int MPGDs = 0x3; // CyMBaL and Outer
   if ((hasStrips&MPGDs)!=hasStrips) {
@@ -172,7 +183,7 @@ recoEvents::recoEvents(TTree *tree, unsigned int mode, unsigned int hasStrips) :
     return;
   }
   stripMode = hasStrips;
-  
+  nSensitiveSurfaces = 1;
   iObjCreated = nObjCreated++;
   Init(tree);
 }
@@ -216,6 +227,8 @@ void recoEvents::Init(TTree *tree)
    fCurrent = -1;
    //fChain->SetMakeClass(1); // Leads to run time crash as soon as one act on mpgdHs
 
+   // ********** BRANCHES
+   // ***** SIMHITS
    for (int idet = 0; idet<N_DETs; idet++) {
      const char *branchNames[N_DETs] = {
        "MPGDBarrel","OuterMPGDBarrel","VertexBarrel","SiBarrel"};
@@ -223,21 +236,25 @@ void recoEvents::Init(TTree *tree)
      string name(branchName); name += string("Hits");
      fChain->SetBranchAddress(name.c_str(),&hits[idet],&simBranches[idet]);
    }
-   for (int idet = 0; idet<N_DETs; idet++) {
-     const char *branchNames[N_DETs] = {
-       "MPGDBarrel","OuterMPGDBarrel","SiBarrelVertex","SiBarrelTracker"};
-     const char *branchName = branchNames[idet];
-     string name(branchName); name += string("RecHits");
-     fChain->SetBranchAddress(name.c_str(),&recs[idet],&recBranches[idet]);
-   }
-   for (int idet = 0; idet<N_DETs; idet++) {
-     const char *branchNames[N_DETs] = {
-       "_MPGDBarrel","_OuterMPGDBarrel","_SiBarrelVertex","_SiBarrel"};
-     const char *branchName = branchNames[idet];
-     string namr(branchName); namr += string("RawHitAssociations_rawHit");
-     string nams(branchName); nams += string("RawHitAssociations_simHit");
-     fChain->SetBranchAddress(namr.c_str(),&arhs[idet],&arhBranches[idet]);
-     fChain->SetBranchAddress(nams.c_str(),&ashs[idet],&ashBranches[idet]);
+   if (reconstruction) { // "simulationOnly" => bypass RecHits and RecHit<->
+     // ***** RECHITS
+     for (int idet = 0; idet<N_DETs; idet++) {
+       const char *branchNames[N_DETs] = {
+	 "MPGDBarrel","OuterMPGDBarrel","SiBarrelVertex","SiBarrelTracker"};
+       const char *branchName = branchNames[idet];
+       string name(branchName); name += string("RecHits");
+       fChain->SetBranchAddress(name.c_str(),&recs[idet],&recBranches[idet]);
+     }
+     // ***** REC
+     for (int idet = 0; idet<N_DETs; idet++) {
+       const char *branchNames[N_DETs] = {
+	 "_MPGDBarrel","_OuterMPGDBarrel","_SiBarrelVertex","_SiBarrel"};
+       const char *branchName = branchNames[idet];
+       string namr(branchName); namr += string("RawHitAssociations_rawHit");
+       string nams(branchName); nams += string("RawHitAssociations_simHit");
+       fChain->SetBranchAddress(namr.c_str(),&arhs[idet],&arhBranches[idet]);
+       fChain->SetBranchAddress(nams.c_str(),&ashs[idet],&ashBranches[idet]);
+     }
    }
    fChain->SetBranchAddress("MCParticles",&mcParticles,&MCParticles);
    fChain->SetBranchAddress("EventHeader",&eventHeader,&EventHeader);
@@ -270,15 +287,17 @@ void recoEvents::Init(TTree *tree)
    // ***** INSTANTIATION
    BookHistos(simHs,"s");
    dSave->cd();
-   // ***** RECO HISTOS
-   if (iObj) snprintf(dN,lN,"dRec%d",iObj);
-   else      snprintf(dN,lN,"dRec");
-   dRec = gDirectory->mkdir(dN); dRec->cd();
-   printf(" * Init: TDirectory \"%s\"\n",gDirectory->GetName());
-   // ***** INSTANTIATION
-   BookHistos(recHs[0],"r0");
-   BookHistos(recHs[1],"r1");
-   dSave->cd();
+   if (reconstruction) {
+     // ***** RECO HISTOS
+     if (iObj) snprintf(dN,lN,"dRec%d",iObj);
+     else      snprintf(dN,lN,"dRec");
+     dRec = gDirectory->mkdir(dN); dRec->cd();
+     printf(" * Init: TDirectory \"%s\"\n",gDirectory->GetName());
+     // ***** INSTANTIATION
+     BookHistos(recHs[0],"r0");
+     BookHistos(recHs[1],"r1");
+     dSave->cd();
+   }
 }
 // *************** HISTOS
 void recoEvents::BookHistos(Histos *Hs, const char* tag)
@@ -305,7 +324,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 
   // ********** LOOP ON DETECTORS
   for (int idet = 0; idet<N_DETs; idet++) {
-    if (!(0x1<<idet&processingMode)) continue;
+    if (!(0x1<<idet&processedDetectors)) continue;
     if (iStrip==2 && !(0x1<<idet&stripMode)) // 2nd coordinate: skip if not STRIP
       continue;
     Histos &hs = Hs[idet];
@@ -641,8 +660,11 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
   if (iSimRec<0 || 2<iSimRec) {
     printf("** DrawphithZR: Unvalid <iSimRec> arg.(=%d): neither 0(=sim) nor 1(=rec) nor 2(=2nd coord of STRIP)\n",iSimRec); return;
   }
+  if (!reconstruction && iSimRec) {
+    printf("** DrawphithZR: Unvalid <iSimRec> arg.(=%d): recoEvents is simulationOnly\n",iSimRec); return;
+  }
   TDirectory *dSave = gDirectory;
-  unsigned int pat = processingMode&detectorPattern;
+  unsigned int pat = processedDetectors&detectorPattern;
   for (int idet = 0; idet<N_DETs; idet++) {
     if (!(0x1<<idet&pat)) continue;
     Histos *Hs; switch (iSimRec) {
@@ -729,10 +751,13 @@ void recoEvents::DrawModules(int iSimRec, unsigned int detectorPattern, bool dec
   if (iSimRec<0 || 2<iSimRec) {
     printf("** DrawModules: Unvalid <iSimRec> arg.(=%d): neither 0(=sim) nor 1(=rec) nor 2(=2nd coord of STRIP)\n",iSimRec); return;
   }
-  unsigned int pat = processingMode&detectorPattern;
+  if (!reconstruction && iSimRec) {
+    printf("** DrawphithZR: Unvalid <iSimRec> arg.(=%d): recoEvents is simulationOnly\n",iSimRec); return;
+  }
+  unsigned int pat = processedDetectors&detectorPattern;
   if (!pat) {
     printf("** DrawModules: None of the processed detectors(=0x%x) in arg. <detectorPattern>(=0x%x)\n",
-	   processingMode,detectorPattern);
+	   processedDetectors,detectorPattern);
     return;
   }
   TDirectory *dSave = gDirectory;
@@ -786,11 +811,14 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
   if (iRec<1 || 2<iRec) {
     printf("** DrawResiduals: Unvalid <iRec> arg.(=%d): neither 1(=1st coord.) nor 2(=2nd coord.)\n",iRec); return;
   }
+  if (!reconstruction) {
+    printf("** DrawphithZR: recoEvents is simulationOnly\n"); return;
+  }
   int strip = iRec-1;
-  unsigned int pat = processingMode&detectorPattern;
+  unsigned int pat = processedDetectors&detectorPattern;
   if (!pat) {
     printf("** DrawResiduals: None of the processed detectors(=0x%x) in arg. <detectorPattern>(=0x%x)\n",
-	   processingMode,detectorPattern);
+	   processedDetectors,detectorPattern);
     return;
   }
   // ***** CONTEXT

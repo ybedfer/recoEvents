@@ -41,7 +41,7 @@ void recoEvents::Loop(int nEvents)
     const char *branchNames[N_DETs] = {
     "MPGDBarrelHits","OuterMPGDBarrelHits","VertexBarrelHits","SiBarrelHits"};
     for (int idet = 0; idet<N_DETs; idet++) {
-    if (!(0x1<<idet&processingMode)) continue;
+    if (!(0x1<<idet&processedDetectors)) continue;
     fChain->SetBranchStatus(branchNames[idet],1);  // activate branchname
     }
     #endif
@@ -61,7 +61,7 @@ void recoEvents::Loop(int nEvents)
     nb = fChain->GetEntry(jentry);   nbytes += nb;
 #else
     for (int idet = 0; idet<N_DETs; idet++) {
-      if (!(0x1<<idet&processingMode)) continue;
+      if (!(0x1<<idet&processedDetectors)) continue;
       branches[idet]->GetEntry(jentry);   nbytes += nb;
     }
 #endif
@@ -72,11 +72,31 @@ void recoEvents::Loop(int nEvents)
     hMult->Fill(mcParticles->size());
 
     for (int idet = 0; idet<N_DETs; idet++) {
-      if (!(0x1<<idet&processingMode)) continue;
+      if (!(0x1<<idet&processedDetectors)) continue;
       // *************** LOOP ON SELECTED DETECTORS
+      int nHits = hits[idet]->size(); // Sim hits
+      // ***** SELECTION
+      if      (requireNHits>0) { if (nHits!=requireNHits) continue; }
+      else if (requireNHits<0) { if (nHits< requireNHits) continue; }
+      for (int ih = 0; ih<nHits; ih++) {
+	// ********** LOOP ON sim HITS
+	SimTrackerHitData &hit = hits[idet]->at(ih);
+	const Vector3d &pos = hit.position;
+	double X = pos.x, Y = pos.y, Z = pos.z;
+	if (requireQuality && hit.quality!=0) {
+	  if (verbose&0x1) printf("hit %d: %6.1f,%6.1f,%6.1f 0x%lx !OK\n",
+			      ih,X,Y,Z,hit.cellID>>32);
+	  continue;
+	}
+	fillHit(0,idet,X,Y,Z,hit.cellID);       // ***** FILL sim HISTOS
+	if (verbose&0x1) printf("hit %d: %6.1f,%6.1f,%6.1f 0x%lx\n",
+				ih,X,Y,Z,hit.cellID>>32);
+	if (verbose&0x6) printHit(idet,X,Y,Z,hit.cellID);
+      }
+      if (verbose&0x6) printf("\n");
+      if (!reconstruction) continue;
       int nArhs = arhs[idet]->size(); // Associations raw hit
       int nAshs = ashs[idet]->size(); // Associations sim hit
-      int nHits = hits[idet]->size(); // Sim hits
       int nRecs = recs[idet]->size(); // Rec hits
       if (!(nArhs||nAshs||nHits||nRecs)) continue;
       if (verbose&0x1) printf("%3d det %d: arh,ash,hit,rec %d,%d,%d,%d\n",
@@ -108,22 +128,6 @@ void recoEvents::Loop(int nEvents)
 	  raw2sim[rIndex] = sIndex;
 	}
       }
-      for (int ih = 0; ih<nHits; ih++) {
-	// ********** LOOP ON sim HITS
-	SimTrackerHitData &hit = hits[idet]->at(ih);
-	const Vector3d &pos = hit.position;
-	double X = pos.x, Y = pos.y, Z = pos.z;
-	if (requireQuality && hit.quality!=0) {
-	  if (verbose&0x1) printf("hit %d: %6.1f,%6.1f,%6.1f 0x%lx !OK\n",
-			      ih,X,Y,Z,hit.cellID>>32);
-	  continue;
-	}
-	fillHit(0,idet,X,Y,Z,hit.cellID);       // ***** FILL sim HISTOS
-	if (verbose&0x1) printf("hit %d: %6.1f,%6.1f,%6.1f 0x%lx\n",
-				ih,X,Y,Z,hit.cellID>>32);
-	if (verbose&0x6) printHit(idet,X,Y,Z,hit.cellID);
-      }
-      if (verbose&0x6) printf("\n");
       for (int ih = 0; ih<nRecs; ih++) {
 	// ********** LOOP ON rec HITS
 	edm4eic::TrackerHitData &rec = recs[idet]->at(ih);
@@ -316,11 +320,11 @@ void recoEvents::parseCellID(int idet, unsigned long ID,
       int sector = module/8, iphi = module%8; module = 8*sector+(4+iphi)%8;
     }
     div = module;
-    strip = ID>>30&0x3;
+    strip = nSensitiveSurfaces==5 ? ID>>28&0xf : ID>>30&0x3;
   }
   else if (idet==1) { // µRWELL
     div = module%2;      // "div" = parity
-    strip = ID>>30&0x3;
+    strip = nSensitiveSurfaces==5 ? ID>>28&0xf : ID>>30&0x3;
   }
   else if (idet==2) {   // Vertex
     int layer = (ID>>8)&0xf; // "div" = log_2(layer)
@@ -339,7 +343,8 @@ bool recoEvents::parseStrip(int idet, int simOrRec, unsigned int &strip)
   // - Convert input stripID (= 0x1 or 0x2) to "strip" (= 0 or 1)
   // - Check it's valid: Depends upon...
   // ..."stripMode" of current "idet"
-  // ...whether it's simHit or recHit 
+  // ...whether it's simHit or recHit
+  // ..."nSensitiveSurfaces"
   bool hasStrips = stripMode&0x1<<idet;
   if (simOrRec && hasStrips) {
     strip -= 1;
@@ -350,7 +355,7 @@ bool recoEvents::parseStrip(int idet, int simOrRec, unsigned int &strip)
       return false;
     }
   }
-  else {
+  else if (nSensitiveSurfaces==1) {
     if (strip!=0) {
       printf("** fillHit: (stripMode=0x%x) idet=%d stripID=0x%x not =0\n",
 	     stripMode,idet,strip);
