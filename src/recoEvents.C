@@ -83,9 +83,10 @@ void recoEvents::Loop(int nEvents)
 	SimTrackerHitData &hit = hits[idet]->at(ih);
 	const Vector3d &pos = hit.position;
 	double X = pos.x, Y = pos.y, Z = pos.z;
-	if (requireQuality && hit.quality!=0) {
-	  if (verbose&0x1) printf("hit %d: %6.1f,%6.1f,%6.1f 0x%lx !OK\n",
-			      ih,X,Y,Z,hit.cellID>>32);
+	// ***** STATUS
+	unsigned int status = getStatus(idet,ih,hit.quality); if (status!=0x3) {
+	  if (verbose&0x1) printf("hit %d: %6.1f,%6.1f,%6.1f 0x%lx 0x%x\n",
+				  ih,X,Y,Z,hit.cellID>>32,status);
 	  continue;
 	}
 	fillHit(0,idet,X,Y,Z,hit.cellID);       // ***** FILL sim HISTOS
@@ -161,6 +162,17 @@ void recoEvents::Loop(int nEvents)
       if (verbose&0x6) printf("\n");
     }
   }
+}
+unsigned int recoEvents::getStatus(int idet, int ih, int quality)
+{
+  // Returned status is OR of conformity to quality and PDG requirements.
+  // 0x3 means OK.
+  unsigned status = 0;
+  podio::ObjectID &amc = amcs[idet]->at(ih); int mcIdx = amc.index;
+  MCParticleData &part = mcParticles->at(mcIdx);
+  if (!requirePDG || part.PDG==requirePDG) status |= 0x1;
+  if (!requireQuality || quality==0)       status |= 0x2;
+  return status;
 }
 void recoEvents::fillHit(int simOrRec, int idet,
 			 double X, double Y, double Z, unsigned long cellID)
@@ -279,7 +291,7 @@ void getReducedOuter(double X, double Y, double Z, unsigned int module,
 		     double &Ur, double &Vr)
 {
   // Rotate to phi = 0
-  int iphi = (module&0x1)?module>>1:(module>>1)-1; double phic = iphi*TMath::Pi()/6;
+  int iphi = module>>1; double phic = iphi*TMath::Pi()/6;
   //<constant name="MPGDOuterBarrelModule_zmin1"     value="164.5*cm"/>
   //<constant name="MPGDOuterBarrelModule_zmin2"     value="174.5*cm"/>
   double zmin1 = 1640.5, zmin2 = 1740.5;
@@ -355,7 +367,7 @@ bool recoEvents::parseStrip(int idet, int simOrRec, unsigned int &strip)
       return false;
     }
   }
-  else if (nSensitiveSurfaces==1) {
+  else if (nSensitiveSurfaces==1 || !hasStrips) {
     if (strip!=0) {
       printf("** fillHit: (stripMode=0x%x) idet=%d stripID=0x%x not =0\n",
 	     stripMode,idet,strip);
