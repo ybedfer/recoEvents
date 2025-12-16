@@ -129,9 +129,13 @@ public :
    static constexpr int jaune = kOrange+0, orange = kOrange+1, rouge  = kRed+0;
    static constexpr int marron = 50, gris   = 11;
    void DrawphithZR(int iSimRec = 0 /* 0: sim, 1: rec, 2: rec 2nd coord of STRIP */,
-		    unsigned int detectorPattern = 0xf, bool decompose = false);
+		    unsigned int detectorPattern = 0xf, 
+		    unsigned int histoPattern = 0xf, bool decompose = false,
+		    TCanvas *cPrv = 0, int ipad = 1, int col = -1);
    void DrawModules(int iSimRec = 0, unsigned int detectorPattern = 0x1, bool decompose = false);
-   void DrawResiduals(int iRec = 1,   unsigned int detectorPattern = 0x1, TCanvas *cPrv = 0, int col = -1);
+   void DrawResiduals(int iRec = 1,   unsigned int detectorPattern = 0x1,
+		      unsigned int histoPattern = 0xf,
+		      TCanvas *cPrv = 0, int ipad = 1, int col = -1);
    void SetMinima(double min);
    TDirectory *dSim, *dSimDets[N_DETs];
    TDirectory *dRec, *dRecDets[N_DETs];
@@ -502,12 +506,12 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     for (int ih = 0; ih<nh2s; ih++) {
       if (!(0x1<<idet&flags[ih])) continue;
       TAxis *ax = h2s[ih]->GetXaxis();
-      ax->SetNdivisions(505);
-      ax->SetLabelSize(.05); ax->SetLabelOffset(.006);
-      ax->SetTitleSize(.06); ax->SetTitleOffset(.8);
+      ax->SetNdivisions(505); ax->SetLabelFont(62);
+      ax->SetLabelSize(.055); ax->SetLabelOffset(.006);
+      ax->SetTitleSize(.065); ax->SetTitleOffset(.8);
       TAxis *ay = h2s[ih]->GetYaxis();
-      ay->SetNdivisions(505);
-      ay->SetLabelSize(.05); ay->SetLabelOffset(.006);
+      ay->SetNdivisions(505); ay->SetLabelFont(62);
+      ay->SetLabelSize(.055); ay->SetLabelOffset(.006);
       ay->SetMaxDigits(2);
     }
     // ***** 2D HISTOS: X vs. Y, R vs. Z, theta vs. phi
@@ -549,14 +553,14 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     if (idet!=0) nH2s -= 4; // If !CyMBaL, cancel hs.XYr
     for (int ih = 0; ih<nH2s; ih++) {
       TAxis *ax = H2s[ih]->GetXaxis();
-      ax->SetNdivisions(505);
-      ax->SetLabelSize(.05); ax->SetLabelOffset(.006);
-      ax->SetTitleSize(.06); ax->SetTitleOffset(.8);
+      ax->SetNdivisions(505); ax->SetLabelFont(62);
+      ax->SetLabelSize(.055); ax->SetLabelOffset(.006);
+      ax->SetTitleSize(.065); ax->SetTitleOffset(.8);
       ax->SetMaxDigits(2);
       TAxis *ay = H2s[ih]->GetYaxis();
-      ay->SetNdivisions(505);
-      ay->SetLabelSize(.05); ay->SetLabelOffset(.006);
-      ay->SetTitleSize(.06); ay->SetTitleOffset(.8);
+      ay->SetNdivisions(505); ay->SetLabelFont(62);
+      ay->SetLabelSize(.055); ay->SetLabelOffset(.006);
+      ay->SetTitleSize(.065); ay->SetTitleOffset(.8);
       ay->SetMaxDigits(2);
     }
     if (isRec) {
@@ -652,13 +656,13 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       for (int ih = 0; ih<nr1s; ih++) {
 	if (!(0x1<<idet&flags[ih])) continue;
 	TAxis *ax = r1s[ih]->GetXaxis();
-	ax->SetNdivisions(510);
-	ax->SetLabelSize(.05); ax->SetLabelOffset(.006);
-	ax->SetTitleSize(.06); ax->SetTitleOffset(.8);
+	ax->SetNdivisions(515); ax->SetLabelFont(62);
+	ax->SetLabelSize(.055); ax->SetLabelOffset(.006);
+	ax->SetTitleSize(.065); ax->SetTitleOffset(.8);
 	ax->SetMaxDigits(3);
 	TAxis *ay = r1s[ih]->GetYaxis();
-	ay->SetNdivisions(505);
-	ay->SetLabelSize(.05); ay->SetLabelOffset(.006);
+	ay->SetNdivisions(505); ay->SetLabelFont(62);
+	ay->SetLabelSize(.055); ay->SetLabelOffset(.006);
 	ay->SetMaxDigits(3);
       }
     }
@@ -692,7 +696,9 @@ Int_t recoEvents::Cut(Long64_t entry)
    return 1;
 }
 void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of STRIP
-			     unsigned int detectorPattern, bool decompose)
+			     unsigned int detectorPattern,
+			     unsigned int histoPattern, bool decompose,
+			     TCanvas *cPrv, int ipad, int col) // Superimpose on pre-existing TCanvas cPrv
 {
   // ***** PARSE <iSimRec> ARG.
   if (iSimRec<0 || 2<iSimRec) {
@@ -717,26 +723,35 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
 		    iSimRec); return;
     }
     Histos &hs = Hs[idet]; hs.dir->cd();
-    // ***** TCANVAS
-    string cS = string("c")+string(detectorNames[idet]);
-    char cTag[] = "0";    // tag to cope w/ several distinct recoEvents object
-    int iObj = iObjCreated; if (iObj) { *cTag += iObj%10; cS += string(cTag); }
-    if (iSimRec)
-      cS += iSimRec==2 ? string("Rec2") : string("Rec");
-    const char *cN = cS.c_str();
-    TCanvas *cEvents = new TCanvas(cN,cN);
-    cEvents->Divide(2,2);
-    gStyle->SetOptStat(10);
+    TCanvas *cEvents; int pad; if (!cPrv) {
+      // ***** TCANVAS
+      string cS = string("c")+string(detectorNames[idet]);
+      char cTag[] = "0";    // tag to cope w/ several distinct recoEvents object
+      int iObj = iObjCreated; if (iObj) { *cTag += iObj%10; cS += string(cTag); }
+      if (iSimRec)
+	cS += iSimRec==2 ? string("Rec2") : string("Rec");
+      const char *cN = cS.c_str();
+      cEvents = new TCanvas(cN,cN);
+      cEvents->Divide(2,2);
+      pad = 1;
+      gStyle->SetOptStat(10);
+    }
+    else {
+      cEvents = cPrv;
+      pad = ipad;
+    }
     // ***** LOOP ON (selected subset of) HISTOS
     TH2D *h2s[4] = { hs.phi,hs.th,hs.Z,hs.R };
     if (idet<2) h2s[3] = hs.Rr;
     for (int ih = 0; ih<4; ih++) {
-      cEvents->cd(ih+1); TH2D *h2 = h2s[ih];
+      if (!(0x1<<ih&histoPattern)) continue;
+      cEvents->cd(pad++); gPad->SetBottomMargin(.15);
+      TH2D *h2 = h2s[ih];
       TH1D *hproj = h2->ProjectionX(); hproj->Draw();
       hproj->SetMinimum(0); // Useful for hs.phi
       TAxis *ay = hproj->GetYaxis();
-      ay->SetNdivisions(505);
-      ay->SetLabelSize(.05); ay->SetLabelOffset(.006);
+      ay->SetNdivisions(505); ay->SetLabelFont(62);
+      ay->SetLabelSize(.055); ay->SetLabelOffset(.006);
       ay->SetMaxDigits(2);
       SetPaveText(hproj);
       if (decompose) {
@@ -842,7 +857,8 @@ void recoEvents::DrawModules(int iSimRec, unsigned int detectorPattern, bool dec
 }
 void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z U/V
 			       unsigned int detectorPattern,
-			       TCanvas *cPrv, int col) // Superimpose on pre-existing TCanvas cPrv
+			       unsigned int histoPattern,
+			       TCanvas *cPrv, int ipad, int col) // Superimpose on pre-existing TCanvas cPrv
 {
   // ********** DRAW (subset of) RESIDUALS FOR EACH DETECTOR IN detectorPattern
   // ***** PARSE ARG.S
@@ -870,7 +886,7 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
       printf("** DrawResiduals: requesting <iRec> = 2 for idet = 0x%x (\"%s\") which is not among detectors w/ strips(=0x%x)\n",
 	       0x1<<idet,detectorNames[idet],stripMode); continue;
     }
-    TCanvas *cResids; if (!cPrv) {
+    TCanvas *cResids; int pad; if (!cPrv) {
       // ***** CANVAS
       string cS = string("c")+string(detectorNames[idet]);
       char cTag[] = "0";    // tag to cope w/ several distinct recoEvents object
@@ -879,9 +895,12 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
       const char *cN = cS.c_str();
       cResids = new TCanvas(cN,cN);
       cResids->Divide(2,2);
+      pad = 1;
     }
-    else
+    else {
       cResids = cPrv;
+      pad = ipad;
+    }
     gStyle->SetStatFormat("6.3g");
     // ***** LOOP ON RESIDUALS (in subset)
     Resids &rs = resHs[strip][idet]; rs.dir->cd();
@@ -895,11 +914,22 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
       r1s[1] = rs.Ur; r1s[2] = rs.Vr; r1s[3] = rs.Rr;
     }
     for (int ih = 0; ih<4; ih++) {
+      if (!(0x1<<ih&histoPattern)) continue;
       TH1D *h1 = r1s[ih];
       if (col>=0) h1->SetLineColor(col);
-      cResids->cd(ih+1);
-      if (cPrv) { h1->Draw("sames"); SetPaveText(h1,1); }
-      else      { h1->Draw();        SetPaveText(h1,0); }
+      cResids->cd(pad++); gPad->SetBottomMargin(.15);
+      bool superImpose = false;
+      if (cPrv) {
+	TList *l = gPad->GetListOfPrimitives(); TObject *o = l->First();
+	while (o) {
+	  if (o->IsA()->InheritsFrom(TH1::Class())) {
+	    superImpose = true; break;
+	  }
+	  o = l->After(o);
+	}
+      }
+      if (superImpose) { h1->Draw("sames"); SetPaveText(h1,1); }
+      else             { h1->Draw();        SetPaveText(h1,0); }
       //  Ndivisions policy: 505 -> 510, when Xaxis labels come close to the edge and collide w/ the Yaxis 0 label
       TAxis *ax = h1->GetXaxis();
       double xLabel = ax->GetXmax()/pow(10,int(log10(ax->GetXmax())));
@@ -923,7 +953,8 @@ void SetPaveText(TH1 *h, int mode)
   else           if (optStat==1110) { dY = .22; X1 = .55; }
 
   TPaveStats *st; if ((st = (TPaveStats*)h->GetFunction("stats"))) {
-    st->SetX2NDC(.995); st->SetX1NDC(.70);
+    st->SetTextFont(62);
+    st->SetX2NDC(.995); st->SetX1NDC(.60);
     st->SetY2NDC(.995-mode*dY); st->SetY1NDC(.995-(mode+1)*dY);
     //st->SetOptStat(1000010);
     st->SetTextColor(col);
@@ -932,7 +963,8 @@ void SetPaveText(TH1 *h, int mode)
 
   TPaveText *tit; if ((tit = (TPaveText*)pad->GetPrimitive("title"))) {
     if (mode==0) { // First histo in pad
-      tit->SetX1NDC(.25); tit->SetX2NDC(.40);
+      tit->SetTextFont(62);
+      tit->SetX1NDC(.25); tit->SetX2NDC(.45);
       tit->SetY1NDC(.92); tit->SetY2NDC(.99);
       tit->Draw();
     }
