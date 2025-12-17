@@ -15,7 +15,7 @@ void getReducedOuter(double X, double Y, double Z, unsigned int div,
 		     double &Rcphi, double &Xr, double &Yr,
 		     double &Ur, double &Vr);
 
-void recoEvents::Loop(int nEvents)
+void recoEvents::Loop(int nEvents, int firstEvent)
 {
   //   In a ROOT session, you can do:
   //      root> .L recoEvents.so
@@ -54,7 +54,7 @@ void recoEvents::Loop(int nEvents)
   Long64_t nentries = nEvents==0 ? fChain->GetEntriesFast() : nEvents;
 
   Long64_t nbytes = 0, nb = 0;
-  for (Long64_t jentry=0; jentry<nentries;jentry++) {
+  for (Long64_t jentry=firstEvent; jentry<nentries;jentry++) {
     Long64_t ientry = LoadTree(jentry);
     if (ientry < 0) break;
 #ifdef FromChain
@@ -66,6 +66,8 @@ void recoEvents::Loop(int nEvents)
     }
 #endif
 
+    if (verbose&0xf0) printf("Event #%d\n",eventHeader->at(0).eventNumber);
+
     //int treenumber = fChain->GetTreeNumber();
     // if (Cut(ientry) < 0) continue;
       
@@ -75,7 +77,7 @@ void recoEvents::Loop(int nEvents)
       if (!(0x1<<idet&processedDetectors)) continue;
       // *************** LOOP ON SELECTED DETECTORS
       int nHits = hits[idet]->size(); // Sim hits
-      // ***** SELECTION
+      // ***** EVENT SELECTION
       if      (requireNHits>0) { if (nHits!=requireNHits) continue; }
       else if (requireNHits<0) { if (nHits< requireNHits) continue; }
       for (int ih = 0; ih<nHits; ih++) {
@@ -83,8 +85,9 @@ void recoEvents::Loop(int nEvents)
 	SimTrackerHitData &hit = hits[idet]->at(ih);
 	const Vector3d &pos = hit.position;
 	double X = pos.x, Y = pos.y, Z = pos.z;
-	// ***** STATUS
-	unsigned int status = getStatus(idet,ih,hit.quality); if (status!=0x3) {
+	// ***** HIT SELECTION
+	unsigned int status = getStatus(idet,ih,hit.quality);
+	if (status!=0x3) {
 	  if (verbose&0x1) printf("hit %d: %6.1f,%6.1f,%6.1f 0x%lx 0x%x\n",
 				  ih,X,Y,Z,hit.cellID>>32,status);
 	  continue;
@@ -98,65 +101,81 @@ void recoEvents::Loop(int nEvents)
       if (!reconstruction) continue;
       int nArhs = arhs[idet]->size(); // Associations raw hit
       int nAshs = ashs[idet]->size(); // Associations sim hit
+      int nARhs = aRhs[idet]->size(); // Associations Rec Hit -> raw hit
       int nRecs = recs[idet]->size(); // Rec hits
       if (!(nArhs||nAshs||nHits||nRecs)) continue;
       if (verbose&0x1) printf("%3d det %d: arh,ash,hit,rec %d,%d,%d,%d\n",
 			      (int)jentry,idet,nArhs,nAshs,nHits,nRecs);
-      map<int,int,less<int>> raw2sim;
-      if (verbose&0x1) {
-	for (int ih = 0; ih<nArhs; ih++) {
-	  podio::ObjectID &arh = arhs[idet]->at(ih);
-	  int rIndex = arh.index; unsigned int cID = arh.collectionID;
-	  printf("arh %d: %d 0x%x\n",ih,rIndex,cID);
-	}
-	for (int ih = 0; ih<nAshs; ih++) {
-	  podio::ObjectID &ash = ashs[idet]->at(ih);
-	  int sIndex = ash.index; unsigned int cID = ash.collectionID;
-	  printf("ash %d: %d 0x%x\n",ih,sIndex,cID);
-	}
-      }
+      map<int,vector<int>,less<int>> rec2sims;
+      if (verbose&0x10<<idet) debugAssoc(idet);
       // ********** BUILD raw <-> sim MAP
       if (nAshs!=nArhs) {
 	printf("Warning: %3d det %d: ash(%d)!=arh(%d)\n",
 	       (int)jentry,idet,nAshs,nArhs);
       }
       else {
-	for (int ih = 0; ih<nArhs; ih++) {
-	  podio::ObjectID &arh = arhs[idet]->at(ih);
-	  int rIndex = arh.index;
-	  podio::ObjectID &ash = ashs[idet]->at(ih);
-	  int sIndex = ash.index;
-	  raw2sim[rIndex] = sIndex;
+	// raw -> Rec
+	// raw can only be associated to one Rec, by construction...
+	// ...and vice-versa, by convention imprinted in edm4hep::TrackerHit
+	map<int,int,less<int>> raw2rec;
+	for (int iR = 0; iR<nARhs; iR++) {
+	  podio::ObjectID &aRh = aRhs[idet]->at(iR); raw2rec[aRh.index] = iR;
 	}
+	// raw <-> sims
+	for (int ih = 0; ih<nArhs; ih++) {
+	  podio::ObjectID &arh = arhs[idet]->at(ih); //RawHitAssociations_rawHit
+	  int rIndex = arh.index;
+	  map<int,int>::const_iterator ir = raw2rec.find(rIndex);
+	  if (ir==raw2rec.end())
+	    // One raw may be lost here, but that lost one is then associated to
+	    // the same sims as the retained one.
+	    continue;
+	  int RIndex = ir->second;
+	  podio::ObjectID &ash = ashs[idet]->at(ih); //RawHitAssociations_simHit
+	  int sIndex = ash.index;
+	  map<int,vector<int>>::iterator im = rec2sims.find(RIndex);
+	  if (im==rec2sims.end()) {
+	    vector<int> sims; sims.push_back(sIndex); rec2sims[RIndex] = sims;
+	  } else {
+	    vector<int> &sims = im->second; sims.push_back(sIndex);
+	  }
+	}
+	if (verbose&0x10<<idet) debugAssoc(raw2rec,rec2sims);
       }
       for (int ih = 0; ih<nRecs; ih++) {
 	// ********** LOOP ON rec HITS
 	edm4eic::TrackerHitData &rec = recs[idet]->at(ih);
 	const Vector3f &pos = rec.position;
 	double X = pos.x, Y = pos.y, Z = pos.z;    
-	fillHit(1,idet,X,Y,Z,rec.cellID);       // ***** FILL rec HISTOS
 	if (verbose&0x1) printf("rec %d: %6.1f,%6.1f,%6.1f 0x%lx\n",
 				ih,X,Y,Z,rec.cellID>>32);
 	if (verbose&0x6) printHit(idet,X,Y,Z,rec.cellID);
 	// ********** RESIDUALS
-	map<int,int,less<int>>::const_iterator im = raw2sim.find(ih);
-	if (im==raw2sim.end()) {
-	  printf("Warning: %3d det %d: raw %d not associated\n",
+	map<int,vector<int>,less<int>>::const_iterator im = rec2sims.find(ih);
+	if (im==rec2sims.end()) {
+	  printf("Warning: Entry %3d det %d: rec %d not associated\n",
 		 (int)jentry,idet,ih);
 	}
 	else {
-	  int sIndex = im->second; // ***** REFERENCE TO sim HIT
-	  if (sIndex<0 || nHits<=sIndex) {
-	    printf("Warning: %3d det %d: raw %d <-> sim %d\n",
-		   (int)jentry,idet,ih,sIndex);
-	  }
-	  else {
-	    SimTrackerHitData &hit = hits[idet]->at(sIndex);
-	    if (!requireQuality || hit.quality==0) {
+	  const vector<int> &sims = im->second;
+	  int is, selecRec; for (is=selecRec = 0; is<(int)sims.size(); is++) {
+	    int sIndex = sims[is]; // ***** REFERENCE TO sim HIT
+	    if (sIndex<0 || nHits<=sIndex) {
+	      printf("Warning: %3d det %d: raw %d <-> sim %d\n",
+		     (int)jentry,idet,ih,sIndex);
+	    }
+	    else {
+	      SimTrackerHitData &hit = hits[idet]->at(sIndex);
+	      // ***** HIT SELECTION
+	      unsigned int status = getStatus(idet,sIndex,hit.quality);
+	      if (status!=0x3) continue;
+	      selecRec = 1;
 	      const Vector3d &psim = hit.position;
 	      fillResids(idet,pos,psim,rec.cellID); // ***** FILL RESIDUAL
 	    }
 	  }
+	  if (selecRec)
+	    fillHit(1,idet,X,Y,Z,rec.cellID);     // ***** FILL rec HISTOS
 	}
       }
       if (verbose&0x6) printf("\n");
@@ -408,5 +427,42 @@ void recoEvents::printHit(int idet,
   else {
     printf("** recoEvents::getDetHit: Invalid det# = %d\n",idet);
     exit(1);
+  }
+}
+void recoEvents::debugAssoc(int idet)
+{
+  int nArhs = arhs[idet]->size(); // Associations raw hit
+  int nAshs = ashs[idet]->size(); // Associations sim hit
+  int nARhs = aRhs[idet]->size(); // Associations Rec Hit -> raw hit
+  printf("arhs %d\n",nArhs);
+  for (int ih = 0; ih<nArhs; ih++) {
+    podio::ObjectID &arh = arhs[idet]->at(ih);
+    int rIndex = arh.index; unsigned int cID = arh.collectionID;
+    printf("%d: %d 0x%x\n",ih,rIndex,cID);
+  }
+  printf("ashs %d\n",nAshs);
+  for (int ih = 0; ih<nAshs; ih++) {
+    podio::ObjectID &ash = ashs[idet]->at(ih);
+    int sIndex = ash.index; unsigned int cID = ash.collectionID;
+    printf("%d: %d 0x%x\n",ih,sIndex,cID);
+  }
+  printf("aRhs %d\n",nARhs);
+  for (int iR = 0; iR<nARhs; iR++) {
+    podio::ObjectID &aRh = aRhs[idet]->at(iR);
+    printf("%d: %d\n",iR,aRh.index);
+  }
+}
+void recoEvents::debugAssoc(map<int,int>raw2rec,map<int,vector<int>> rec2sims)
+{				  
+  map<int,int>::const_iterator ir;
+  for (ir = raw2rec.cbegin(); ir != raw2rec.cend(); ir++) {
+    printf("raw2rec %d -> %d\n",ir->first,ir->second);
+  }
+  map<int,vector<int>>::const_iterator im;
+  for (im = rec2sims.cbegin(); im != rec2sims.cend(); im++) {
+    printf("rec2sims: %d ->",im->first);
+    const vector<int> &sims = im->second;
+    for (int is = 0; is<(int)sims.size(); is++) printf(" %d",sims[is]);
+    printf("\n");
   }
 }

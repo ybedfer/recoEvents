@@ -125,6 +125,8 @@ public :
    bool parseStrip(int idet, int simOrRec, unsigned int &strip);
    void printHit(int idet,
 		 double X, double Y, double Z, unsigned long cellID);
+   void debugAssoc(int idet);
+   void debugAssoc(map<int,int>raw2rec,map<int,vector<int>> rec2sims);
    static constexpr int violet = kMagenta+2, bleu = kBlue+1, vert = kGreen+2;
    static constexpr int jaune = kOrange+0, orange = kOrange+1, rouge  = kRed+0;
    static constexpr int marron = 50, gris   = 11;
@@ -154,12 +156,14 @@ public :
    TBranch *arhBranches[N_DETs];
    vector<podio::ObjectID> *ashs[N_DETs];
    TBranch *ashBranches[N_DETs];
+   vector<podio::ObjectID> *aRhs[N_DETs]; // RECHIT -> RAWHIT
+   TBranch *aRhBranches[N_DETs];
    vector<MCParticleData> *mcParticles;
    TBranch *MCParticles;
    vector<EventHeaderData> *eventHeader;
    TBranch *EventHeader;
 
-   virtual void     Loop(int nEvents = 0);
+  virtual void     Loop(int nEvents = 0, int firstEvent = 0);
 
  private:
    virtual Int_t    Cut(Long64_t entry);
@@ -287,15 +291,18 @@ void recoEvents::Init(TTree *tree)
        string name(branchName); name += string("RecHits");
        fChain->SetBranchAddress(name.c_str(),&recs[idet],&recBranches[idet]);
      }
-     // ***** RECHITS <-> RAWHIT ASSOCIATION
+     // ***** RAWHITS <-> SIMHITS ASSOCIATION
+     // ***** RAWHIT   -> RECHIT  ASSOCIATION
      for (int idet = 0; idet<N_DETs; idet++) {
        const char *branchNames[N_DETs] = {
 	 "_MPGDBarrel","_OuterMPGDBarrel","_SiBarrelVertex","_SiBarrel"};
        const char *branchName = branchNames[idet];
        string namr(branchName); namr += string("RawHitAssociations_rawHit");
        string nams(branchName); nams += string("RawHitAssociations_simHit");
+       string namR(branchName); namR += string("RecHits_rawHit");
        fChain->SetBranchAddress(namr.c_str(),&arhs[idet],&arhBranches[idet]);
        fChain->SetBranchAddress(nams.c_str(),&ashs[idet],&ashBranches[idet]);
+       fChain->SetBranchAddress(namR.c_str(),&aRhs[idet],&aRhBranches[idet]);
      }
    }
    fChain->SetBranchAddress("MCParticles",&mcParticles,&MCParticles);
