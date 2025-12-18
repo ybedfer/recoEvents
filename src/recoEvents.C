@@ -66,7 +66,8 @@ void recoEvents::Loop(int nEvents, int firstEvent)
     }
 #endif
 
-    if (verbose&0xf0) printf("Event #%d\n",eventHeader->at(0).eventNumber);
+    int evtNum = eventHeader->at(0).eventNumber;
+    if (verbose&0xfff) printf("Event #%d\n",evtNum);
 
     //int treenumber = fChain->GetTreeNumber();
     // if (Cut(ientry) < 0) continue;
@@ -80,35 +81,44 @@ void recoEvents::Loop(int nEvents, int firstEvent)
       // ***** EVENT SELECTION
       if      (requireNHits>0) { if (nHits!=requireNHits) continue; }
       else if (requireNHits<0) { if (nHits< requireNHits) continue; }
+      vector<SimTrackerHitData> coalescedHs; map<int,int> sim2coa;
       for (int ih = 0; ih<nHits; ih++) {
 	// ********** LOOP ON sim HITS
 	SimTrackerHitData &hit = hits[idet]->at(ih);
 	const Vector3d &pos = hit.position;
-	double X = pos.x, Y = pos.y, Z = pos.z;
-	// ***** HIT SELECTION
-	unsigned int status = getStatus(idet,ih,hit.quality);
-	if (status!=0x3) {
-	  if (verbose&0x1) printf("hit %d: %6.1f,%6.1f,%6.1f 0x%lx 0x%x\n",
-				  ih,X,Y,Z,hit.cellID>>32,status);
-	  continue;
+	int jh = ih+1, coalesced = 0; if (jh<nHits && samePMO(idet,ih,jh)) {
+	  SimTrackerHitData hext; if (extrapolate(idet,ih,jh,hext)) {
+	    sim2coa[ih] = coalescedHs.size(); sim2coa[jh] = coalescedHs.size();
+	    coalescedHs.push_back(hext); coalesced = 1; ih++;
+	  }
 	}
-	fillHit(0,idet,X,Y,Z,hit.cellID);       // ***** FILL sim HISTOS
-	if (verbose&0x1) printf("hit %d: %6.1f,%6.1f,%6.1f 0x%lx\n",
-				ih,X,Y,Z,hit.cellID>>32);
-	if (verbose&0x6) printHit(idet,X,Y,Z,hit.cellID);
+	if (!coalesced) {
+	  sim2coa[ih] = coalescedHs.size();
+	  coalescedHs.push_back(hit);
+	}
       }
-      if (verbose&0x6) printf("\n");
+      int mHits = coalescedHs.size();
+      for (int ih = 0; ih<mHits; ih++) {
+	SimTrackerHitData &hit = coalescedHs[ih];
+	// ***** HIT SELECTION
+	unsigned int status = getStatus(idet,ih,sim2coa);
+	if (verbose&0x1<<idet) debugHit(idet,ih,hit,status);
+	if (status!=0x3) continue;
+	const Vector3d &pos = hit.position;
+	double X = pos.x, Y = pos.y, Z = pos.z;
+	fillHit(0,idet,X,Y,Z,hit.cellID);       // ***** FILL sim HISTOS
+	if (verbose&0x1000) printHit(idet,X,Y,Z,hit.cellID);
+      }
+      if (verbose&0x1000) printf("\n");
       if (!reconstruction) continue;
       int nArhs = arhs[idet]->size(); // Associations raw hit
       int nAshs = ashs[idet]->size(); // Associations sim hit
       int nARhs = aRhs[idet]->size(); // Associations Rec Hit -> raw hit
       int nRecs = recs[idet]->size(); // Rec hits
       if (!(nArhs||nAshs||nHits||nRecs)) continue;
-      if (verbose&0x1) printf("%3d det %d: arh,ash,hit,rec %d,%d,%d,%d\n",
-			      (int)jentry,idet,nArhs,nAshs,nHits,nRecs);
       map<int,vector<int>,less<int>> rec2sims;
       if (verbose&0x10<<idet) debugAssoc(idet);
-      // ********** BUILD raw <-> sim MAP
+      // ********** BUILD rec <-> sim MAP
       if (nAshs!=nArhs) {
 	printf("Warning: %3d det %d: ash(%d)!=arh(%d)\n",
 	       (int)jentry,idet,nAshs,nArhs);
@@ -133,23 +143,25 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	  int RIndex = ir->second;
 	  podio::ObjectID &ash = ashs[idet]->at(ih); //RawHitAssociations_simHit
 	  int sIndex = ash.index;
+	  map<int,int>::const_iterator is = sim2coa.find(sIndex);
+	  if (is==sim2coa.end()) continue;
+	  int cIndex = is->second;
 	  map<int,vector<int>>::iterator im = rec2sims.find(RIndex);
 	  if (im==rec2sims.end()) {
-	    vector<int> sims; sims.push_back(sIndex); rec2sims[RIndex] = sims;
+	    vector<int> sims; sims.push_back(cIndex); rec2sims[RIndex] = sims;
 	  } else {
-	    vector<int> &sims = im->second; sims.push_back(sIndex);
+	    vector<int> &sims = im->second; sims.push_back(cIndex);
 	  }
 	}
-	if (verbose&0x10<<idet) debugAssoc(raw2rec,rec2sims);
+	if (verbose&0x10<<idet) debugAssoc(raw2rec,sim2coa,rec2sims);
       }
       for (int ih = 0; ih<nRecs; ih++) {
 	// ********** LOOP ON rec HITS
 	edm4eic::TrackerHitData &rec = recs[idet]->at(ih);
 	const Vector3f &pos = rec.position;
 	double X = pos.x, Y = pos.y, Z = pos.z;    
-	if (verbose&0x1) printf("rec %d: %6.1f,%6.1f,%6.1f 0x%lx\n",
-				ih,X,Y,Z,rec.cellID>>32);
-	if (verbose&0x6) printHit(idet,X,Y,Z,rec.cellID);
+	if (verbose&0x1<<idet) debugRec(idet,ih,rec);
+	if (verbose&0x1000) printHit(idet,X,Y,Z,rec.cellID);
 	// ********** RESIDUALS
 	map<int,vector<int>,less<int>>::const_iterator im = rec2sims.find(ih);
 	if (im==rec2sims.end()) {
@@ -165,9 +177,9 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 		     (int)jentry,idet,ih,sIndex);
 	    }
 	    else {
-	      SimTrackerHitData &hit = hits[idet]->at(sIndex);
+	      SimTrackerHitData &hit = coalescedHs[sIndex];
 	      // ***** HIT SELECTION
-	      unsigned int status = getStatus(idet,sIndex,hit.quality);
+	      unsigned int status = getStatus(idet,sIndex,sim2coa);
 	      if (status!=0x3) continue;
 	      selecRec = 1;
 	      const Vector3d &psim = hit.position;
@@ -178,7 +190,7 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	    fillHit(1,idet,X,Y,Z,rec.cellID);     // ***** FILL rec HISTOS
 	}
       }
-      if (verbose&0x6) printf("\n");
+      if (verbose&0x1000) printf("\n");
     }
   }
 }
@@ -191,6 +203,18 @@ unsigned int recoEvents::getStatus(int idet, int ih, int quality)
   MCParticleData &part = mcParticles->at(mcIdx);
   if (!requirePDG || part.PDG==requirePDG) status |= 0x1;
   if (!requireQuality || quality==0)       status |= 0x2;
+  return status;
+}
+unsigned int recoEvents::getStatus(int idet, int ih, map<int,int> &sim2coa)
+{
+  unsigned int status = 0;
+  for (auto is = sim2coa.cbegin(); is!=sim2coa.cend(); is++) {
+    if (is->second==ih) {
+      int jh = is->first; SimTrackerHitData &sim = hits[idet]->at(jh);
+      status = getStatus(idet,jh,sim.quality);
+      break;
+    }
+  }
   return status;
 }
 void recoEvents::fillHit(int simOrRec, int idet,
@@ -239,7 +263,7 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
   double phi = atan2(Y,X), phis = atan2(Ys,Xs);
   double dphi = 1000*(phi-phis);
   double D = sqrt(R2+Z*Z), Ds = sqrt(Rs2+Zs*Zs), dD = 1000*(D-Ds);
-  if (verbose&0x2) printf(" dX,dY,dZ: %.2f,%.2f,%.2f",dX,dY,dZ);
+  if (verbose&0x2000) printf(" dX,dY,dZ: %.2f,%.2f,%.2f",dX,dY,dZ);
   unsigned int module, div, strip; parseCellID(idet,cellID,module,div,strip);
   // ***** STRIP: Convert stripID -> strip. Is it valid? 
   if (!parseStrip(idet,1,strip)) return;
@@ -249,14 +273,14 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
   if      (idet==0) { // CyMBaL specific
     double Xd, Yd, Rr, phir;   getReducedCyMBaL(X,Y,div,Xd,Yd,Rr,phir);
     double Rrs, phirs;         getReducedCyMBaL(Xs,Ys,div,Xd,Yd,Rrs,phirs);
-    if (verbose&0x2) printf("Rr,Rrs: %.2f,%.2f\n",Rr,Rrs);
+    if (verbose&0x2000) printf("Rr,Rrs: %.2f,%.2f\n",Rr,Rrs);
     double dRr = 1000*(Rr-Rrs), dphir = 1000*(phir-phirs);
     rs.Rr->Fill(dRr); rs.phir->Fill(dphir);
   }
   else if (idet==1) { // Outer specific
     double Rcdphi,  Xr,  Yr,  Ur,  Vr;  getReducedOuter(X, Y, Z, module,Rcdphi, Xr, Yr, Ur, Vr);
     double Rcdphis, Xrs, Yrs, Urs, Vrs; getReducedOuter(Xs,Ys,Zs,module,Rcdphis,Xrs,Yrs,Urs,Vrs);
-    if (verbose&0x2)
+    if (verbose&0x2000)
       printf("Rr,Rrs: %.2f,%.2f, Ur,Urs: %.2f,%.2f, Vr,Vrs: %.2f,%.2f\n",
 	     Rcdphi,Rcdphis,Ur,Urs,Vr,Vrs);
     double dRcdphi = 1000*(Rcdphi-Rcdphis);
@@ -264,7 +288,7 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     double dUr = 1000*(Ur-Urs), dVr = 1000*(Vr-Vrs);
     rs.Ur->Fill(dUr); rs.Vr->Fill(dVr);
   }
-  else if (verbose&0x2) printf("\n");
+  else if (verbose&0x2000) printf("\n");
 }
 void getReducedCyMBaL(double X, double Y, unsigned int div,
 		      double &Xr, double &Yr, double &Rr, double &phir,
@@ -403,7 +427,7 @@ void recoEvents::printHit(int idet,
   const double pi = TMath::Pi();
   unsigned int module, div, strip; parseCellID(idet,cellID,module,div,strip);
   int cell = cellID>>32;
-  if (verbose&0x4) {
+  if (verbose&0x4000) {
     printf(" 0x%08lx,0x%08x  %7.2f,%7.2f,%8.2f %7.2f cm %6.3fπ",
 	   cellID&0xfffffff,cell,X,Y,Z,R,phi/pi);
     if      (idet==1) printf(" %5.1f 0x%02x 0x%x",phi/pi*12,module,module>>1);
@@ -429,6 +453,61 @@ void recoEvents::printHit(int idet,
     exit(1);
   }
 }
+bool recoEvents::samePMO(int idet, int ih, int jh) {
+  SimTrackerHitData &hit = hits[idet]->at(ih), &hjt = hits[idet]->at(jh);
+  int mcIdx = amcs[idet]->at(ih).index, module = (hit.cellID>>12)&0xfff;
+  int quality = hit.quality;
+  int mcJdx = amcs[idet]->at(jh).index, modvle = (hjt.cellID>>12)&0xfff;
+  int qualjty = hjt.quality;
+  if (verbose&0x100<<idet)
+    printf("%d: %2d,%2d,%d (0x%16lx), %d: %2d,%2d,%d (0x%16lx)\n",
+	   ih,mcIdx,module,quality,hit.cellID,
+	   jh,mcJdx,modvle,qualjty,hjt.cellID);
+  return mcJdx==mcIdx && modvle==module && qualjty==quality;
+}
+bool recoEvents::extrapolate(int idet, int ih, int jh, SimTrackerHitData &hext)
+{
+  SimTrackerHitData &hit = hits[idet]->at(ih), &hjt = hits[idet]->at(jh);
+  const Vector3d &pos = hit.position, &pqs = hjt.position;
+  double Mx = pos.x, My = pos.y, Mz = pos.z;
+  double Nx = pqs.x, Ny = pqs.y, Nz = pqs.z;
+  double dist = sqrt((Mx-Nx)*(Mx-Nx)+(My-Ny)*(My-Ny)+(Mz-Nz)*(Mz-Nz));
+  const Vector3f &mom = hit.momentum, mqm = hjt.momentum;
+  double Px = mom.x, Py = mom.y, Pz = mom.z, P = sqrt(Px*Px+Py*Py+Pz*Pz);
+  double Qx = mqm.x, Qy = mqm.y, Qz = mqm.z, Q = sqrt(Qx*Qx+Qy*Qy+Qz*Qz);
+  double u = dist/2/P, Ex = Mx+u*Px, Ey = My+u*Py, Ez = Mz+u*Pz;
+  double v = dist/2/Q, Fx = Nx-v*Qx, Fy = Ny-v*Qy, Fz = Nz-v*Qz;
+  double dext = sqrt((Ex-Fx)*(Ex-Fx)+(Ey-Fy)*(Ey-Fy)+(Ez-Fz)*(Ez-Fz));
+  if (verbose&0x100<<idet) {
+    printf("0x%lx 0x%lx %.2f,%.2f,%.2f -> %.2f,%.2f,%.2f\n",
+	   hit.cellID&0xffffffff,hit.cellID>>32,Mx,My,Mz,Ex,Ey,Ez);
+    printf("0x%lx 0x%lx %.2f,%.2f,%.2f -> %.2f,%.2f,%.2f\n",
+	   hjt.cellID&0xffffffff,hjt.cellID>>32,Nx,Ny,Nz,Fx,Fy,Fz);
+    printf("dext %f\n",dext);
+  }
+  if (dext<.025) {
+    Vector3d pext; pext.x = (Ex+Fx)/2; pext.y = (Ey+Fy)/2; pext.z = (Ez+Fz)/2;
+    hext.position = pext; hext.EDep = hit.EDep+hjt.EDep;
+    hext.cellID = hit.cellID; hext.quality = hit.quality;
+    return true;
+  }
+  else
+    return false;
+}
+void recoEvents::debugHit(int idet, int ih, SimTrackerHitData &hit, unsigned int status)
+{
+  int nHits = hits[idet]->size();
+  const Vector3d &pos = hit.position;
+  printf("hit %d/%d: %6.1f,%6.1f,%6.1f 0x%lx 0x%x\n",
+	 ih,nHits,pos.x,pos.y,pos.z,hit.cellID>>32,status);
+}
+void recoEvents::debugRec(int idet, int ih, edm4eic::TrackerHitData &rec)
+{
+  int nRecs = recs[idet]->size();
+  const Vector3f &pos = rec.position;
+  printf("rec %d/%d: %6.1f,%6.1f,%6.1f 0x%lx\n",
+	 ih,nRecs,pos.x,pos.y,pos.z,rec.cellID>>32);
+}
 void recoEvents::debugAssoc(int idet)
 {
   int nArhs = arhs[idet]->size(); // Associations raw hit
@@ -452,11 +531,14 @@ void recoEvents::debugAssoc(int idet)
     printf("%d: %d\n",iR,aRh.index);
   }
 }
-void recoEvents::debugAssoc(map<int,int>raw2rec,map<int,vector<int>> rec2sims)
+void recoEvents::debugAssoc(map<int,int>raw2rec, map<int,int> sim2coa, map<int,vector<int>> rec2sims)
 {				  
   map<int,int>::const_iterator ir;
   for (ir = raw2rec.cbegin(); ir != raw2rec.cend(); ir++) {
     printf("raw2rec %d -> %d\n",ir->first,ir->second);
+  }
+  for (ir = sim2coa.cbegin(); ir != sim2coa.cend(); ir++) {
+    printf("sim2coa %d -> %d\n",ir->first,ir->second);
   }
   map<int,vector<int>>::const_iterator im;
   for (im = rec2sims.cbegin(); im != rec2sims.cend(); im++) {

@@ -116,6 +116,7 @@ public :
    int requireNHits;
    void BookHistos(Histos *Hs, const char *tag);
    unsigned int getStatus(int idet, int ih, int quality);
+   unsigned int getStatus(int idet, int ih, map<int,int> &sim2coa);
    void fillHit(int iSimRec, int idet,
 		double X, double Y, double Z, unsigned long cellID);
    void fillResids(int idet,
@@ -123,10 +124,14 @@ public :
    void parseCellID(int idet, unsigned long ID,
 		    unsigned int &module, unsigned int &div, unsigned int &strip);
    bool parseStrip(int idet, int simOrRec, unsigned int &strip);
+   bool samePMO(int idet, int ih, int jh);
+   bool extrapolate(int idet, int ih, int jh, SimTrackerHitData &hext);
    void printHit(int idet,
 		 double X, double Y, double Z, unsigned long cellID);
+   void debugHit(int idet, int ih, SimTrackerHitData &hit, unsigned int status);
+   void debugRec(int idet, int ih, edm4eic::TrackerHitData &rec);
    void debugAssoc(int idet);
-   void debugAssoc(map<int,int>raw2rec,map<int,vector<int>> rec2sims);
+   void debugAssoc(map<int,int>raw2rec, map<int,int> sim2coa, map<int,vector<int>> rec2sims);
    static constexpr int violet = kMagenta+2, bleu = kBlue+1, vert = kGreen+2;
    static constexpr int jaune = kOrange+0, orange = kOrange+1, rouge  = kRed+0;
    static constexpr int marron = 50, gris   = 11;
@@ -575,9 +580,9 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       int i01 = tag[1]=='0' ? 0 : 1;
       Resids &rs = resHs[i01][idet]; rs.dir = dSD;
       // ***** RANGES
-      double dx = idet<2 ? 512 /* All MPGDs */ : 24 /* Si */; // in µm
+      double dx = idet<2 ? 608 /* All MPGDs */ : 24 /* Si */; // in µm
       double dr = dx, dd = dx ,dz = dx, du = dx, dv = dx;
-      double dphi = .8; // in mrad
+      double dphi = 1.2; // in mrad
       if (0x1<<idet&stripMode) { // ***** STRIPS: UPDATE RANGES DEPENDING ON iStrip
 	if (idet==0) { // CyMBaL
 	  // From: epic/compact/tracking/mpgd_barrel.xml
