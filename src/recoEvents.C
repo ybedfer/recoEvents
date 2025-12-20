@@ -71,16 +71,16 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 
     //int treenumber = fChain->GetTreeNumber();
     // if (Cut(ientry) < 0) continue;
-      
-    hMult->Fill(mcParticles->size());
+
+    // ***** #MCs
+    int nMCs = mcParticles->size(); hMult->Fill(nMCs);
+    if      (requireNMCs>0)  { if (nMCs!=requireNMCs) continue; }
+    else if (requireNMCs<0)  { if (nMCs< requireNMCs) continue; }
 
     for (int idet = 0; idet<N_DETs; idet++) {
       if (!(0x1<<idet&processedDetectors)) continue;
       // *************** LOOP ON SELECTED DETECTORS
       int nHits = hits[idet]->size(); // Sim hits
-      // ***** EVENT SELECTION
-      if      (requireNHits>0) { if (nHits!=requireNHits) continue; }
-      else if (requireNHits<0) { if (nHits< requireNHits) continue; }
       vector<SimTrackerHitData> coalescedHs; map<int,int> sim2coa;
       for (int ih = 0; ih<nHits; ih++) {
 	// ********** LOOP ON sim HITS
@@ -97,8 +97,11 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	  coalescedHs.push_back(hit);
 	}
       }
-      int mHits = coalescedHs.size();
-      for (int ih = 0; ih<mHits; ih++) {
+      int nCoaHs = coalescedHs.size();
+      // ***** EVENT SELECTION
+      if      (requireNHits>0) { if (nCoaHs!=requireNHits) continue; }
+      else if (requireNHits<0) { if (nCoaHs< requireNHits) continue; }
+      for (int ih = 0; ih<nCoaHs; ih++) {
 	SimTrackerHitData &hit = coalescedHs[ih];
 	// ***** HIT SELECTION
 	unsigned int status = getStatus(idet,ih,sim2coa);
@@ -223,6 +226,7 @@ void recoEvents::fillHit(int simOrRec, int idet,
   unsigned int module, div, strip; parseCellID(idet,cellID,module,div,strip);
   // ***** STRIP: Convert stripID -> strip. Is it valid? 
   if (!parseStrip(idet,simOrRec,strip)) return;
+  // ***** MODULE SELECTION
   if (requireModule>=0 && module!=requireModule) return;
   double R2 = X*X+Y*Y, R = sqrt(R2);
   double phi = atan2(Y,X);

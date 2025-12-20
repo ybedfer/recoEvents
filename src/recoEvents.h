@@ -105,15 +105,20 @@ public :
    // Can be 1, 2 or 5.
    int nSensitiveSurfaces;
 
-   // ***** HISTOS
+   // ********** HISTOS
+   // ***** SELECTION
    TTreeFormula *select; // Provides for specifying a rejection cut.
+   // ***** EVENT SELECTION
+   int requireNMCs;
+   // Cut on #SimHits (in fact on # of coalesced such) per detector:
+   // >0: #SimHits=="requireNHits", <0: #SimHits>="requireNHits"
+   int requireNHits;
+   // ***** MODULE SELECTION
+   int requireModule;  // If >=0, select module "requireModule" (D=-1=All)
+   // ***** HIT SELECTION
    // Requirements for filling "simHs" and residuals
    int requirePDG;     // Associated MCParticle 
    int requireQuality; // "SimTrackerHit::quality"
-   int requireModule; // If >=0, select module "requireModule" (D=-1=All)
-   // Cut on #SimHits per detector (and, not yet implemented, per MC particle)
-   // >0: #SimHits=="requireNHits", <0: #SimHits>="requireNHits"
-   int requireNHits;
    void BookHistos(Histos *Hs, const char *tag);
    unsigned int getStatus(int idet, int ih, int quality);
    unsigned int getStatus(int idet, int ih, map<int,int> &sim2coa);
@@ -188,10 +193,12 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
 {
   // Init global settings
   processedDetectors = detectors; verbose = 0; select = 0;
-  requirePDG = 0; // Default: do not require any ID
+  // ***** SELECTION
+  requireNMCs =    0; // Default: no requirement
+  requireNHits =   0; // Default: no requirement
+  requireModule = -1; // Default: all staves
+  requirePDG =     0; // Default: do not require any ID
   requireQuality = 0; // Default: do not require "SimTrackerHit::quality"
-  requireModule = -1;  // Default: all staves
-  requireNHits = 0; // Default: no requirement
   // Check that arg. "hasStrips" fits the pattern of MPGDs
   unsigned int MPGDs = 0x3; // CyMBaL and Outer
   if ((hasStrips&MPGDs)!=hasStrips) {
