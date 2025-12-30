@@ -66,7 +66,7 @@ void recoEvents::Loop(int nEvents, int firstEvent)
     }
 #endif
 
-    int evtNum = eventHeader->at(0).eventNumber;
+    evtNum = eventHeader->at(0).eventNumber;
     if (verbose&0xfff) printf("Event #%d\n",evtNum);
 
     //int treenumber = fChain->GetTreeNumber();
@@ -77,6 +77,12 @@ void recoEvents::Loop(int nEvents, int firstEvent)
     if      (requireNMCs>0)  { if (nMCs!=requireNMCs) continue; }
     else if (requireNMCs<0)  { if (nMCs< requireNMCs) continue; }
 
+    // Init requirement
+    unsigned int modID = 0, prvID = 0;
+    int nGoodCoaHs = 0, nGoodCHs = 0; // #coalesced-hits fulfilling requirements
+    int nHsPerModule = 0, nHsPM = 0;  // #coalesced-hits per module
+    // Modules where all hits fulfill quality requirement
+    unsigned int modulesOK = 0, moduleOK = 0;
     for (int idet = 0; idet<N_DETs; idet++) {
       if (!(0x1<<idet&processedDetectors)) continue;
       // *************** LOOP ON SELECTED DETECTORS
@@ -85,34 +91,78 @@ void recoEvents::Loop(int nEvents, int firstEvent)
       for (int ih = 0; ih<nHits; ih++) {
 	// ********** LOOP ON sim HITS
 	SimTrackerHitData &hit = hits[idet]->at(ih);
-	const Vector3d &pos = hit.position;
-	int jh = ih+1, coalesced = 0; if (jh<nHits && samePMO(idet,ih,jh)) {
-	  SimTrackerHitData hext; if (extrapolate(idet,ih,jh,hext)) {
-	    sim2coa[ih] = coalescedHs.size(); sim2coa[jh] = coalescedHs.size();
-	    coalescedHs.push_back(hext); coalesced = 1; ih++;
+	int jh = ih; vector<int> coalesced; int nCoaHs = coalescedHs.size();
+	while (++jh<nHits && samePMO(idet,ih,jh)) {
+	  if (extrapolate(idet,ih,jh)) {
+	    if (coalesced.empty()) {
+	      coalesced.push_back(ih); sim2coa[ih] = nCoaHs;
+	    }
+	    coalesced.push_back(jh); sim2coa[jh] = nCoaHs;
 	  }
+	  else break;
 	}
-	if (!coalesced) {
-	  sim2coa[ih] = coalescedHs.size();
-	  coalescedHs.push_back(hit);
+	if (coalesced.size()<2) {
+	  if (hit.quality==0) { // Extend to edge of pathLength
+	    SimTrackerHitData hext; extend(idet,ih,hext);
+	    coalescedHs.push_back(hext);
+	  }
+	  else // Do not extend secondary: its position is, in general, well
+	    // represented by its SimTrackerHit position.
+	    coalescedHs.push_back(hit);
+	  sim2coa[ih] = nCoaHs;
 	}
+	else {
+	  SimTrackerHitData hext; if (!coalesce(idet,coalesced,hext)) return;
+	  sim2coa[ih] = nCoaHs; coalescedHs.push_back(hext);
+	  ih += coalesced.size()-1;
+	}
+	// LONE PRIMARY?
+	unsigned int status = getStatus(idet,ih,hit.quality);
+	modID = hit.cellID&0xfffffff;
+	if (modID==prvID)
+	  nHsPM++;
+	else {
+	  nHsPM = 1; modulesOK |= moduleOK;
+	}
+	if (nHsPM>nHsPerModule) nHsPerModule = nHsPM;
+	if (status==0x3) {
+	  if (modID==prvID)
+	    nGoodCHs++;
+	  else {
+	    nGoodCHs = 1; moduleOK = modID;
+	  }
+	  if (nGoodCHs>nGoodCoaHs) nGoodCoaHs = nGoodCHs;
+	}
+	else if (!(status&0x2))
+	  moduleOK = 0;
+	prvID = modID;
       }
+      if (moduleOK) modulesOK |= moduleOK;
+
+      bool doDebug = nMCs==1 && (nGoodCoaHs>2 || evtNum==94 || evtNum==2402) && idet==0;
+      if (doDebug) printf("Evt %d\n",evtNum);
       int nCoaHs = coalescedHs.size();
       // ***** EVENT SELECTION
-      if      (requireNHits>0) { if (nCoaHs!=requireNHits) continue; }
-      else if (requireNHits<0) { if (nCoaHs< requireNHits) continue; }
+      if      (requireNHits>0) { if (nHsPerModule!=requireNHits) continue; }
+      else if (requireNHits<0) { if (nHsPerModule< requireNHits) continue; }
       for (int ih = 0; ih<nCoaHs; ih++) {
 	SimTrackerHitData &hit = coalescedHs[ih];
 	// ***** HIT SELECTION
 	unsigned int status = getStatus(idet,ih,sim2coa);
 	if (verbose&0x1<<idet) debugHit(idet,ih,hit,status);
 	if (status!=0x3) continue;
+	if (requireQuality>1) {
+	  modID = hit.cellID&0xfffffff; if ((modID&modulesOK)!=modID) continue;
+	}
+	// Fill hit
 	const Vector3d &pos = hit.position;
 	double X = pos.x, Y = pos.y, Z = pos.z;
 	fillHit(0,idet,X,Y,Z,hit.cellID);       // ***** FILL sim HISTOS
 	if (verbose&0x1000) printHit(idet,X,Y,Z,hit.cellID);
+	if (doDebug) printHit(idet,X,Y,Z,hit.cellID);
       }
       if (verbose&0x1000) printf("\n");
+      if (doDebug) printf("\n");
       if (!reconstruction) continue;
       int nArhs = arhs[idet]->size(); // Associations raw hit
       int nAshs = ashs[idet]->size(); // Associations sim hit
@@ -153,7 +203,12 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	  if (im==rec2sims.end()) {
 	    vector<int> sims; sims.push_back(cIndex); rec2sims[RIndex] = sims;
 	  } else {
-	    vector<int> &sims = im->second; sims.push_back(cIndex);
+	    // Not twice same SimHit associated to RecHit.
+	    vector<int> &sims = im->second;
+	    int is, match; for (int is=match = 0; is<(int)sims.size(); is++) {
+	      if (sims[ih]==cIndex) { match = 1; break; }
+	    }
+	    if (!match) sims.push_back(cIndex);
 	  }
 	}
 	if (verbose&0x10<<idet) debugAssoc(raw2rec,sim2coa,rec2sims);
@@ -175,6 +230,12 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	  const vector<int> &sims = im->second;
 	  int is, selecRec; for (is=selecRec = 0; is<(int)sims.size(); is++) {
 	    int sIndex = sims[is]; // ***** REFERENCE TO sim HIT
+	    if (evtNum==19 || evtNum==29 || evtNum==2402) {
+	      SimTrackerHitData &hit = coalescedHs[sIndex];
+	      printf("#%d %d/%d:%d(0x%08lx,0x%08lx) %d/%d 0x%08lx,0x%08lx\n",evtNum,
+		     is,(int)sims.size(),sIndex,hit.cellID&0xffffffff,hit.cellID>>32,
+		     ih,nRecs,rec.cellID&0xffffffff,rec.cellID>>32);
+	    }
 	    if (sIndex<0 || nHits<=sIndex) {
 	      printf("Warning: %3d det %d: raw %d <-> sim %d\n",
 		     (int)jentry,idet,ih,sIndex);
@@ -184,6 +245,9 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	      // ***** HIT SELECTION
 	      unsigned int status = getStatus(idet,sIndex,sim2coa);
 	      if (status!=0x3) continue;
+	      if (requireQuality>1) {
+		modID = rec.cellID&0xfffffff; if ((modID&modulesOK)!=modID) continue;
+	      }
 	      selecRec = 1;
 	      const Vector3d &psim = hit.position;
 	      fillResids(idet,pos,psim,rec.cellID); // ***** FILL RESIDUAL
@@ -200,7 +264,8 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 unsigned int recoEvents::getStatus(int idet, int ih, int quality)
 {
   // Returned status is OR of conformity to quality and PDG requirements.
-  // 0x3 means OK.
+  // 0x1: PDG OK.
+  // 0x2: quality OK.
   unsigned status = 0;
   podio::ObjectID &amc = amcs[idet]->at(ih); int mcIdx = amc.index;
   MCParticleData &part = mcParticles->at(mcIdx);
@@ -280,6 +345,12 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     if (verbose&0x2000) printf("Rr,Rrs: %.2f,%.2f\n",Rr,Rrs);
     double dRr = 1000*(Rr-Rrs), dphir = 1000*(phir-phirs);
     rs.Rr->Fill(dRr); rs.phir->Fill(dphir);
+    if (strip==1 && dZ<-600) {
+      printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f %7.3f mm\n",
+	     evtNum,cellID&0xffffffff,cellID>>32,X,Y,Z,Rr);
+      printf("#   SimHit                    %7.2f,%7.2f,%8.2f %7.3f mm\n",
+	     Xs,Ys,Zs,Rrs);
+    }
   }
   else if (idet==1) { // Outer specific
     double Rcdphi,  Xr,  Yr,  Ur,  Vr;  getReducedOuter(X, Y, Z, module,Rcdphi, Xr, Yr, Ur, Vr);
@@ -368,7 +439,7 @@ void recoEvents::parseCellID(int idet, unsigned long ID,
   // silicon_barrel.xml:   <id>system:8,layer:4,module:12, ...
   // vertex_barrel.xml:    <id>system:8,layer:4,module:12, ...
   // => All have same module specif.
-  // system: CyMBal = 61, Outer = 64, ... (It's not checked that this is what we get in "ID")
+  // system: CyMBaL = 61, Outer = 64, ... (It's not checked that this is what we get in "ID")
   module = (ID>>12)&0xfff;
   // ***** divISION
   //       iRec = (strip coordinate: 0 = measurement coord, 1 = orthogonal
@@ -402,7 +473,7 @@ bool recoEvents::parseStrip(int idet, int simOrRec, unsigned int &strip)
   // - Convert input stripID (= 0x1 or 0x2) to "strip" (= 0 or 1)
   // - Check it's valid: Depends upon...
   // ..."stripMode" of current "idet"
-  // ...whether it's simHit or recHit
+  // ...whether it's SimHit or RecHit
   // ..."nSensitiveSurfaces"
   bool hasStrips = stripMode&0x1<<idet;
   if (simOrRec && hasStrips) {
@@ -444,8 +515,10 @@ void recoEvents::printHit(int idet,
   }
   else if (idet==0) {
     double Xr, Yr, Rr, phir; int zone; getReducedCyMBaL(X,Y,div,Xr,Yr,Rr,phir,&zone);
-    printf(" %2d,0x%08x  %7.2f,%7.2f,%8.2f cm %6.3fπ  %7.2f,%7.2f %7.2f cm %6.3fπ",
-	   module,cell,X,Y,Z,phi/pi,Xr,Yr,Rr,phir/pi);
+    //printf(" %2d,0x%08x  %7.2f,%7.2f,%8.2f cm %6.3fπ  %7.2f,%7.2f %7.2f cm %6.3fπ",
+    //	   module,cell,X,Y,Z,phi/pi,Xr,Yr,Rr,phir/pi);
+    printf(" 0x%8lx,0x%08x  %7.2f,%7.2f,%8.2f %7.2f cm\n",
+	   cellID&0xffffffff,cell,X,Y,Z,Rr);
   }
   else if (idet==1) {
     double Rcdphi, Xr, Yr, Ur, Vr; int zone; getReducedOuter(X,Y,Z,module,Rcdphi,Xr,Yr,Ur,Vr);
@@ -458,18 +531,29 @@ void recoEvents::printHit(int idet,
   }
 }
 bool recoEvents::samePMO(int idet, int ih, int jh) {
+  // Check <ih> and <jh> share same P[ARTICLE], M[ODULE], O[RIGIN]...
+  // ...TO WHICH WE ADD that SUBVOLUME SHOULD DIFFER. This, to exclude
+  // secondaries that otherwise would pass the "extrapolate" step, because on
+  // the one hand, they originate from the same primary (and are hence close to
+  // one another) and on the other hand, "extrapolate" method is simplistic (
+  // at variance to EICrecon's "MPGDTrackerDigi", it does not take into the
+  // pathLengths of the hit to be coalesced).
   SimTrackerHitData &hit = hits[idet]->at(ih), &hjt = hits[idet]->at(jh);
-  int mcIdx = amcs[idet]->at(ih).index, module = (hit.cellID>>12)&0xfff;
+  int mcIdx = amcs[idet]->at(ih).index;
+  unsigned long cID = hit.cellID, vID = cID&0xffffffff;
+  int module = cID>>12&0xfff;
   int quality = hit.quality;
-  int mcJdx = amcs[idet]->at(jh).index, modvle = (hjt.cellID>>12)&0xfff;
+  int mcJdx = amcs[idet]->at(jh).index;
+  unsigned long cJD = hjt.cellID, vJD = cJD&0xffffffff;
+  int modvle = cJD>>12&0xfff;
   int qualjty = hjt.quality;
   if (verbose&0x100<<idet)
-    printf("%d: %2d,%2d,%d (0x%16lx), %d: %2d,%2d,%d (0x%16lx)\n",
-	   ih,mcIdx,module,quality,hit.cellID,
-	   jh,mcJdx,modvle,qualjty,hjt.cellID);
-  return mcJdx==mcIdx && modvle==module && qualjty==quality;
+    printf("%d: PMO=%2d,%2d,%d (0x%08lx,0x%08lx), %d: PMO=%2d,%2d,%d (0x%08lx,0x%08lx)\n",
+	   ih,mcIdx,module,quality,vID,hit.cellID>>32,
+	   jh,mcJdx,modvle,qualjty,vJD,hjt.cellID>>32);
+  return mcJdx==mcIdx && modvle==module && qualjty==quality && vJD!=vID;
 }
-bool recoEvents::extrapolate(int idet, int ih, int jh, SimTrackerHitData &hext)
+bool recoEvents::extrapolate(int idet, int ih, int jh)
 {
   SimTrackerHitData &hit = hits[idet]->at(ih), &hjt = hits[idet]->at(jh);
   const Vector3d &pos = hit.position, &pqs = hjt.position;
@@ -482,21 +566,102 @@ bool recoEvents::extrapolate(int idet, int ih, int jh, SimTrackerHitData &hext)
   double u = dist/2/P, Ex = Mx+u*Px, Ey = My+u*Py, Ez = Mz+u*Pz;
   double v = dist/2/Q, Fx = Nx-v*Qx, Fy = Ny-v*Qy, Fz = Nz-v*Qz;
   double dext = sqrt((Ex-Fx)*(Ex-Fx)+(Ey-Fy)*(Ey-Fy)+(Ez-Fz)*(Ez-Fz));
-  if (verbose&0x100<<idet) {
-    printf("0x%lx 0x%lx %.2f,%.2f,%.2f -> %.2f,%.2f,%.2f\n",
-	   hit.cellID&0xffffffff,hit.cellID>>32,Mx,My,Mz,Ex,Ey,Ez);
-    printf("0x%lx 0x%lx %.2f,%.2f,%.2f -> %.2f,%.2f,%.2f\n",
-	   hjt.cellID&0xffffffff,hjt.cellID>>32,Nx,Ny,Nz,Fx,Fy,Fz);
-    printf("dext %f\n",dext);
+  bool ok = dext<.025;
+  bool doPrint = verbose&0x100<<idet;
+  if (!doPrint && !ok) {
+    unsigned status = getStatus(idet,ih,hit.quality); doPrint = status==0x3;
   }
-  if (dext<.025) {
-    Vector3d pext; pext.x = (Ex+Fx)/2; pext.y = (Ey+Fy)/2; pext.z = (Ez+Fz)/2;
-    hext.position = pext; hext.EDep = hit.EDep+hjt.EDep;
+  if (doPrint) {
+    printf("#%4d %d,%d dext %f\n",evtNum,ih,jh,dext);
+    printf("%2d: 0x%08lx 0x%08lx %.2f,%.2f,%.2f -> %.2f,%.2f,%.2f\n",
+	   ih,hit.cellID&0xffffffff,hit.cellID>>32,Mx,My,Mz,Ex,Ey,Ez);
+    printf("%2d: 0x%08lx 0x%08lx %.2f,%.2f,%.2f -> %.2f,%.2f,%.2f\n",
+	   jh,hjt.cellID&0xffffffff,hjt.cellID>>32,Nx,Ny,Nz,Fx,Fy,Fz);
+  }
+  return ok;
+}
+bool recoEvents::coalesce(int idet, vector<int> coalesced, SimTrackerHitData &hext) {
+  int ic, ih3, ih4, ih0; double eDep; for (ic = 0, ih3=ih4=ih0 = -1, eDep = 0;
+					   ic<(int)coalesced.size(); ic++) {
+    int ih = coalesced[ic]; SimTrackerHitData &hit = hits[idet]->at(ih);
+    int subVolID = hit.cellID>>28&0xf;
+    if      (subVolID==0x3) ih3 = ih;
+    else if (subVolID==0x4) ih4 = ih;
+    else if (subVolID==0x0) ih0 = ih;
+    else if (ih0<0)         ih0 = ih;
+    eDep += hit.EDep;
+  }
+  if (ih3>=0 && ih4>=0) {
+    SimTrackerHitData &hit = hits[idet]->at(ih3), &hjt = hits[idet]->at(ih4);
+    const Vector3d &pos = hit.position, &pqs = hjt.position;
+    double Mx = pos.x, My = pos.y, Mz = pos.z;
+    double Nx = pqs.x, Ny = pqs.y, Nz = pqs.z;
+    Vector3d pext; pext.x = (Mx+Nx)/2; pext.y = (My+Ny)/2; pext.z = (Mz+Nz)/2;
+    hext.position = pext; hext.EDep = eDep;
     hext.cellID = hit.cellID; hext.quality = hit.quality;
     return true;
   }
-  else
+  else if (ih0>=0) {
+    SimTrackerHitData &hit = hits[idet]->at(ih0);
+    hext.position = hit.position; hext.EDep = eDep;
+    hext.cellID = hit.cellID; hext.quality = hit.quality;
+    return true;
+  }
+  else {
+    printf("#%d: Inconsistency\n",evtNum);
+    for (int ic = 0; ic<(int)coalesced.size(); ic++) {
+      int ih = coalesced[ic]; SimTrackerHitData &hit = hits[idet]->at(ih);
+      printf("%d: 0x%08lx 0x%lx %.2f,%.2f,%.2f\n",
+	     ih,hit.cellID&0xffffffff,hit.cellID>>32,
+	     hit.position.x,hit.position.y,hit.position.z);
+    }
     return false;
+  }
+  return false;
+}
+void recoEvents::extend(int idet, int ih, SimTrackerHitData &hext)
+{
+  // Extend along P by pathLength/2.
+  // - Expected to be called for hit <ih> being...
+  //  ...primary,
+  //  ...w/o any counterpart.
+  //   This corresponds to a particle depositing energy in only one SUBVOLUME.
+  // - Extend it, i.e. extrapolate it to the end of its pathLength, to mimic
+  //  MPGDTrackerDigi (which in turn tries and emulates what we would get w/ a
+  //  single sensitive volume).
+  //   It's an approximation: extrapolation should go up to REFERENCE SUBVOLUME.
+  //  But it's the best we can do, w/o knowledge of the detector geometry.
+  SimTrackerHitData &hit = hits[idet]->at(ih); unsigned long cID = hit.cellID;
+  const Vector3d &pos = hit.position; double Mx = pos.x, My = pos.y, Mz = pos.z;
+  const Vector3f &mom = hit.momentum; double Px = mom.x, Py = mom.y, Pz = mom.z;
+  double P = sqrt(Px*Px+Py*Py+Pz*Pz), Ex, Ey, Ez;
+  int subVolID = hit.cellID>>28&0xf; if (subVolID==3) {
+    double u =  hit.pathLength/2/P;  Ex = Mx+u*Px; Ey = My+u*Py; Ez = Mz+u*Pz;
+  }
+  else if (subVolID==4) {
+    double u = -hit.pathLength/2/P; Ex = Mx+u*Px; Ey = My+u*Py; Ez = Mz+u*Pz;
+  }
+  else {
+    Ex = Mx; Ey = My; Ez = Mz;
+  }
+  Vector3d pext; pext.x = Ex; pext.y = Ey; pext.z = Ez;
+  hext.position = pext; hext.EDep = hit.EDep;
+  hext.cellID = hit.cellID; hext.quality = hit.quality;
+  if (verbose&0x100<<idet) {
+    printf("#%5d: %d extend\n",evtNum,ih);
+    if (idet==0) {
+      unsigned int module, div, strip; parseCellID(idet,hit.cellID,module,div,strip);
+      double Xr, Yr, Rr, phir;
+      getReducedCyMBaL(Mx,My,div,Xr,Yr,Rr,phir); double Mr = Rr;
+      getReducedCyMBaL(Ex,Ey,div,Xr,Yr,Rr,phir); double Er = Rr;
+      printf(" 0x%08lx 0x%08lx %.2f,%.2f,%.2f (%.3f) -> %.2f,%.2f,%.2f (%.3f) mm\n",
+	     hit.cellID&0xffffffff,hit.cellID>>32,Mx,My,Mz,Mr,Ex,Ey,Ez,Er);
+    }
+    else
+      printf(" 0x%08lx 0x%08lx %.2f,%.2f,%.2f -> %.2f,%.2f,%.2f mm\n",
+	     hit.cellID&0xffffffff,hit.cellID>>32,Mx,My,Mz,Ex,Ey,Ez);
+      
+  }
 }
 void recoEvents::debugHit(int idet, int ih, SimTrackerHitData &hit, unsigned int status)
 {

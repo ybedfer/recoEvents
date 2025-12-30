@@ -5,19 +5,38 @@
 //////////////////////////////////////////////////////////
 
 /*
-// USAGE
+// ********** USAGE
+// ***** Input = TChain
 const char tag[7] = "struv", nEvtsTag[3] = "20"; 
 TChain *events = new TChain("events"); char fName[] = "podio.sensor.1234.20,root"; size_t lN = strlen(fName)+1; int seeds[] = {1234,4567,8910,1112}; int nSeeds = sizeof(seeds)/sizeof(int);
 for (int i = 0; i<nSeeds; i++) { snprintf(fName,lN,"podio.%s.%s.%4d.root",tag,nEvtsTag,seeds[i]); events->Add(fName); }
+// ***** Input = TTree
+TTree *events = (TTree*)gDirectory->Get("events");
+// ***** Instantiation
 .L ../recoEvents/install/librecoEvents.so
 recoEvents ana(events,0xf); // Instantiate for all of (0x1:CyMBaL,0x2:Outer,0x4:Vertex,0x8:Si)
+// ***** Customization
 ana.select = new TTreeFormula("select", "@MCParticles.size()==1", events);// Add rejection cut
-ana.Loop();
-ana.DrawphithZR(0,0xf,true); // Draw some simHits, w/ if true, colour highlighting of module type.
-ana.DrawphithZR(1,0xf,true); // Draw some recHits (1st coord), w/ if true, colour highlighting of module type.
-ana.DrawResiduals(0,0x1); // Draw some residuals for phi (iRec=1) of CyMBaL (=0x1)
-
-ana.recHs[0][0].ZR[0]; h2->SetTitle("CyMBaL Rec"); h2->Draw();  SetPaveText(h2,0)
+ana.requirePDG = 13;        // Require MCParticle = mu-
+ana.requireQuality = 2;     // Require primary (!=0) and reject primary w/ interfering secondary in same module (>1)
+ana.verbose = 0x111;        // Debugging printout (1 for CyMBaL, 2 for Outer...)
+// ***** 5-SUBVOLUME: is default. SimHits are coalesced alla MPGDTrackerDigi
+recoEvents ana(events,0xf,0x0); // Instantiate w/ no strips (i.e. pixels) in CyMBaL and Outer
+ana.nSensitiveSurfaces = 1; // Overwrite default.
+// ***** Loop
+ana.Loop();                 // For debugging: "Loop(<nEvents>,<firstEvent>)"
+// ***** Draw
+ana.DrawphithZR(0,0xf,true); // Draw SimHits, w/ if true, colour highlighting of module type.
+ana.DrawphithZR(1,0xf,true); // Draw RecHits (1: 1st coord, 2: 2nd coord), w/ if true, colour highlighting of module type.
+ana.DrawResiduals(1,0x1);    // Draw residuals RecHit-SimHit for phi (iRec=1) of CyMBaL (=0x1)
+ana.recHs[0][0].ZR[0]; h2->SetTitle("CyMBaL Rec"); h2->Draw(); SetPaveText(h2,0); // Direct access to histograms
+// ***** Several recoEvents objects
+recoEvents ana2(events2,0xf);
+// [...]
+ana.DrawResiduals(1,0x1,0x6)
+ana2.DrawResiduals(1,0x1,0x6,cCyMBaLRes,3)
+// ***** PDF
+cCyMBaLRes->Print("cCyMBaLRes.pdf","EmbedFonts")
 */
 
 #ifndef recoEvents_h
@@ -78,7 +97,7 @@ public :
 	      // Detector pattern: 0x1=CyMBaL, 0x2=Outer, 0x4=Vertex, 0x8=Si
 	      // mode: Processed detectors
 	      // hasStrips: If not set, detector has pixels.
-	      unsigned int mode = 0x1, unsigned int hasStrips = 0x3);
+	      unsigned int mode = 0xf, unsigned int hasStrips = 0x3);
    virtual ~recoEvents();
 
    TTree          *fChain;   //!pointer to the analyzed TTree or TChain
@@ -92,7 +111,8 @@ public :
    unsigned int stripMode;  // Pattern of detectors w/ strip readout
    bool reconstruction;
    int verbose;
-
+   int evtNum; // Current event# (used to document error messages).
+  
    int getDetHit(int idet, int ih, double &X, double &Y, double &Z,
 		 unsigned int &module, unsigned int &div);
 
@@ -118,7 +138,7 @@ public :
    // ***** HIT SELECTION
    // Requirements for filling "simHs" and residuals
    int requirePDG;     // Associated MCParticle 
-   int requireQuality; // "SimTrackerHit::quality"
+   int requireQuality; // "SimTrackerHit::quality". =1: reject secondary hits, >1: reject hit w/ secondary in same module
    void BookHistos(Histos *Hs, const char *tag);
    unsigned int getStatus(int idet, int ih, int quality);
    unsigned int getStatus(int idet, int ih, map<int,int> &sim2coa);
@@ -130,7 +150,9 @@ public :
 		    unsigned int &module, unsigned int &div, unsigned int &strip);
    bool parseStrip(int idet, int simOrRec, unsigned int &strip);
    bool samePMO(int idet, int ih, int jh);
-   bool extrapolate(int idet, int ih, int jh, SimTrackerHitData &hext);
+   bool extrapolate(int idet, int ih, int jh);
+   bool coalesce(int idet, vector<int> coalesced, SimTrackerHitData &hext);
+   void extend(int idet, int ih, SimTrackerHitData &hext);
    void printHit(int idet,
 		 double X, double Y, double Z, unsigned long cellID);
    void debugHit(int idet, int ih, SimTrackerHitData &hit, unsigned int status);
@@ -207,7 +229,8 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
     return;
   }
   stripMode = hasStrips;
-  nSensitiveSurfaces = 1;
+  if (!hasStrips) nSensitiveSurfaces = 1;
+  else            nSensitiveSurfaces = 5;
   iObjCreated = nObjCreated++;
   Init(tree);
 }
@@ -246,7 +269,10 @@ void recoEvents::Init(TTree *tree)
    // (once per file to be processed).
 
    // Set branch addresses and branch pointers
-   if (!tree) return;
+   if (!tree) {
+     printf("** recoEvents::Init: Arg. TTree* is null. => Abort!\n");
+     return;
+   }
    fChain = (TChain*)tree;
    fCurrent = -1;
    //fChain->SetMakeClass(1); // Leads to run time crash as soon as one act on mpgdHs
@@ -304,16 +330,21 @@ void recoEvents::Init(TTree *tree)
        fChain->SetBranchAddress(name.c_str(),&recs[idet],&recBranches[idet]);
      }
      // ***** RAWHITS <-> SIMHITS ASSOCIATION
-     // ***** RAWHIT   -> RECHIT  ASSOCIATION
      for (int idet = 0; idet<N_DETs; idet++) {
        const char *branchNames[N_DETs] = {
 	 "_MPGDBarrel","_OuterMPGDBarrel","_SiBarrelVertex","_SiBarrel"};
        const char *branchName = branchNames[idet];
        string namr(branchName); namr += string("RawHitAssociations_rawHit");
        string nams(branchName); nams += string("RawHitAssociations_simHit");
-       string namR(branchName); namR += string("RecHits_rawHit");
        fChain->SetBranchAddress(namr.c_str(),&arhs[idet],&arhBranches[idet]);
        fChain->SetBranchAddress(nams.c_str(),&ashs[idet],&ashBranches[idet]);
+     }
+     // ***** RAWHIT   -> RECHIT  ASSOCIATION
+     for (int idet = 0; idet<N_DETs; idet++) {
+       const char *branchNames[N_DETs] = {
+	 "_MPGDBarrel","_OuterMPGDBarrel","_SiBarrelVertex","_SiBarrelTracker"};
+       const char *branchName = branchNames[idet];
+       string namR(branchName); namR += string("RecHits_rawHit");
        fChain->SetBranchAddress(namR.c_str(),&aRhs[idet],&aRhBranches[idet]);
      }
    }
@@ -369,7 +400,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
   // ***** PARSE <tag> ARG.
   // Check internal consistency
   if (strcmp(tag,"s") && strcmp(tag,"r0") && strcmp(tag,"r1")) {
-    printf("** BookHistos: Inconsistency: Unvalid <tag> arg.(=\"%s\"). Aborting...\n",tag);
+    printf("** BookHistos: Inconsistency: Invalid <tag> arg.(=\"%s\"). Aborting...\n",tag);
     exit(1);
   }
   bool isRec = tag[0]=='r';
@@ -381,7 +412,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
   // ***** BASE DIRECTORY
   TDirectory *dSave = gDirectory;
   if (!isRec) // Only once
-    hMult = new TH1D("hMult","@MCparticles.size()",512,0,512);
+    hMult = new TH1D("hMult","@MCParticles.size()",512,0,512);
 
   // ********** LOOP ON DETECTORS
   for (int idet = 0; idet<N_DETs; idet++) {
@@ -721,10 +752,10 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
 {
   // ***** PARSE <iSimRec> ARG.
   if (iSimRec<0 || 2<iSimRec) {
-    printf("** DrawphithZR: Unvalid <iSimRec> arg.(=%d): neither 0(=sim) nor 1(=rec) nor 2(=2nd coord of STRIP)\n",iSimRec); return;
+    printf("** DrawphithZR: Invalid <iSimRec> arg.(=%d): neither 0(=sim) nor 1(=rec) nor 2(=2nd coord of STRIP)\n",iSimRec); return;
   }
   if (!reconstruction && iSimRec) {
-    printf("** DrawphithZR: Unvalid <iSimRec> arg.(=%d): recoEvents is simulationOnly\n",iSimRec); return;
+    printf("** DrawphithZR: Invalid <iSimRec> arg.(=%d): recoEvents is simulationOnly\n",iSimRec); return;
   }
   TDirectory *dSave = gDirectory;
   unsigned int pat = processedDetectors&detectorPattern;
@@ -738,7 +769,7 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
 	       0x1<<idet,detectorNames[idet],stripMode); continue;
       }
       /* */ Hs = recHs[1]; break;
-    default: printf("** DrawphithZR: Unvalid <iSimRec> (=%d, not in [0,2])\n",
+    default: printf("** DrawphithZR: Invalid <iSimRec> (=%d, not in [0,2])\n",
 		    iSimRec); return;
     }
     Histos &hs = Hs[idet]; hs.dir->cd();
@@ -821,10 +852,10 @@ void recoEvents::DrawModules(int iSimRec, unsigned int detectorPattern, bool dec
   // ********** DRAW module# FOR EACH DETECTOR IN detectorPattern
   // ***** PARSE ARG.S
   if (iSimRec<0 || 2<iSimRec) {
-    printf("** DrawModules: Unvalid <iSimRec> arg.(=%d): neither 0(=sim) nor 1(=rec) nor 2(=2nd coord of STRIP)\n",iSimRec); return;
+    printf("** DrawModules: Invalid <iSimRec> arg.(=%d): neither 0(=sim) nor 1(=rec) nor 2(=2nd coord of STRIP)\n",iSimRec); return;
   }
   if (!reconstruction && iSimRec) {
-    printf("** DrawphithZR: Unvalid <iSimRec> arg.(=%d): recoEvents is simulationOnly\n",iSimRec); return;
+    printf("** DrawphithZR: Invalid <iSimRec> arg.(=%d): recoEvents is simulationOnly\n",iSimRec); return;
   }
   unsigned int pat = processedDetectors&detectorPattern;
   if (!pat) {
@@ -844,7 +875,7 @@ void recoEvents::DrawModules(int iSimRec, unsigned int detectorPattern, bool dec
 	       0x1<<idet,detectorNames[idet],stripMode); continue;
       }
       /* */ Hs = recHs[1]; break;
-    default: printf("** DrawModules: Unvalid <iSimRec> (=%d, not in [0,2])\n",
+    default: printf("** DrawModules: Invalid <iSimRec> (=%d, not in [0,2])\n",
 		    iSimRec); return;
     }
     Histos &hs = Hs[idet]; hs.dir->cd();
@@ -882,7 +913,7 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
   // ********** DRAW (subset of) RESIDUALS FOR EACH DETECTOR IN detectorPattern
   // ***** PARSE ARG.S
   if (iRec<1 || 2<iRec) {
-    printf("** DrawResiduals: Unvalid <iRec> arg.(=%d): neither 1(=1st coord.) nor 2(=2nd coord.)\n",iRec); return;
+    printf("** DrawResiduals: Invalid <iRec> arg.(=%d): neither 1(=1st coord.) nor 2(=2nd coord.)\n",iRec); return;
   }
   if (!reconstruction) {
     printf("** DrawphithZR: recoEvents is simulationOnly\n"); return;
@@ -997,7 +1028,7 @@ void recoEvents::SetMinima(double min)
   while (o) {
     if (o->IsA()->InheritsFrom("TH1D")) {
       TH1D *h = (TH1D*)o;
-      printf(" * SetMinima: %s->Setinimum(%f);\n",h->GetName(),min);
+      printf(" * SetMinima: %s->SetMinimum(%f);\n",h->GetName(),min);
       h->SetMinimum(min);
     }
     o = l->After(o);
@@ -1040,7 +1071,7 @@ void recoEvents::SetMinima(double min)
   recoEvents ana2(events,0xf);
   ana2.requireQuality = 1; // REQUIRE quality IN SimTrackerHit's
   ana2.Loop();
-  // ***** CyMBAL
+  // ***** CyMBaL
   ana.DrawResiduals(0x1,0,2);
   c = (TCanvas*)gROOT->FindObject("cCyMBaLRes");
   if (c) ana2.DrawResiduals(0x1,c);
