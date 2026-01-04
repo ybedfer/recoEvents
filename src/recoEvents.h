@@ -6,16 +6,16 @@
 
 /*
 // ********** USAGE
-// ***** Input = TChain
+// ***** INPUT = TChain
 const char tag[7] = "struv", nEvtsTag[3] = "20"; 
 TChain *events = new TChain("events"); char fName[] = "podio.sensor.1234.20,root"; size_t lN = strlen(fName)+1; int seeds[] = {1234,4567,8910,1112}; int nSeeds = sizeof(seeds)/sizeof(int);
 for (int i = 0; i<nSeeds; i++) { snprintf(fName,lN,"podio.%s.%s.%4d.root",tag,nEvtsTag,seeds[i]); events->Add(fName); }
-// ***** Input = TTree
+// ***** INPUT = TTree
 TTree *events = (TTree*)gDirectory->Get("events");
-// ***** Instantiation
+// ***** INSTANTIATION
 .L ../recoEvents/install/librecoEvents.so
 recoEvents ana(events,0xf); // Instantiate for all of (0x1:CyMBaL,0x2:Outer,0x4:Vertex,0x8:Si)
-// ***** Customization
+// ***** EVENT CONTROL, DEBUGGING
 ana.select = new TTreeFormula("select", "@MCParticles.size()==1", events);// Add rejection cut
 ana.requirePDG = 13;        // Require MCParticle = mu-
 ana.requireQuality = 2;     // Require primary (!=0) and reject primary w/ interfering secondary in same module (>1)
@@ -23,14 +23,15 @@ ana.verbose = 0x111;        // Debugging printout (1 for CyMBaL, 2 for Outer...)
 // ***** 5-SUBVOLUME: is default. SimHits are coalesced alla MPGDTrackerDigi
 recoEvents ana(events,0xf,0x0); // Instantiate w/ no strips (i.e. pixels) in CyMBaL and Outer
 ana.nSensitiveSurfaces = 1; // Overwrite default.
-// ***** Loop
+// ***** LOOP
 ana.Loop();                 // For debugging: "Loop(<nEvents>,<firstEvent>)"
-// ***** Draw
+// ***** DRAW
 ana.DrawphithZR(0,0xf,true); // Draw SimHits, w/ if true, colour highlighting of module type.
 ana.DrawphithZR(1,0xf,true); // Draw RecHits (1: 1st coord, 2: 2nd coord), w/ if true, colour highlighting of module type.
 ana.DrawResiduals(1,0x1);    // Draw residuals RecHit-SimHit for phi (iRec=1) of CyMBaL (=0x1)
-ana.recHs[0][0].ZR[0]; h2->SetTitle("CyMBaL Rec"); h2->Draw(); SetPaveText(h2,0); // Direct access to histograms
-// ***** Several recoEvents objects
+// Direct access to histograms
+ana.recHs[0][0].ZR[0]; h2->SetTitle("CyMBaL Rec"); h2->Draw(); SetPaveText(h2,0);
+// ***** SEVERAL recoEvents OBJECTS
 recoEvents ana2(events2,0xf);
 // [...]
 ana.DrawResiduals(1,0x1,0x6)
@@ -110,11 +111,22 @@ public :
    unsigned int processedDetectors;
    unsigned int stripMode;  // Pattern of detectors w/ strip readout
    bool reconstruction;
-   int verbose;
-   int evtNum; // Current event# (used to document error messages).
-  
    int getDetHit(int idet, int ih, double &X, double &Y, double &Z,
 		 unsigned int &module, unsigned int &div);
+   // ***** EVENT CONTROL, DEBUGGING
+   int evtNum; // Current event# (used to document error messages).
+   unsigned int prvPat;
+   unsigned long modPats; // Pattern of all modules where hit
+   // Modules where LONE PRIMARY, i.e. primary hit w/o secondary offsprings
+   unsigned long modulesLP, moduleLP;
+   unsigned long modulesLP1; // In addition, single hit
+   unsigned int doDebug; // Debug control
+   int evtToDebug; // "evtNum" of event to be debugged
+   // Verbosity:
+   // 0xh<<Idet, h = 0x1: SimHit/RecHit, 0x10: Association, 0x100: Coalescing/Extending, 0x1000: Large residuals
+   // 0x10000: More info
+   // 0x20000: Header
+   unsigned int verbose;
 
    // ***** DETECTOR NAMES
 #define N_DETs 4
@@ -130,17 +142,14 @@ public :
    TTreeFormula *select; // Provides for specifying a rejection cut.
    // ***** EVENT SELECTION
    int requireNMCs;
-   // Cut on #SimHits (in fact on # of coalesced such) per detector:
-   // >0: #SimHits=="requireNHits", <0: #SimHits>="requireNHits"
-   int requireNHits;
    // ***** MODULE SELECTION
-   int requireModule;  // If >=0, select module "requireModule" (D=-1=All)
+   unsigned long requireModules;  // If >=0, select module "0x1<<module&requireModules" (D=0)
    // ***** HIT SELECTION
    // Requirements for filling "simHs" and residuals
    int requirePDG;     // Associated MCParticle 
    int requireQuality; // "SimTrackerHit::quality". =1: reject secondary hits, >1: reject hit w/ secondary in same module
    void BookHistos(Histos *Hs, const char *tag);
-   unsigned int getStatus(int idet, int ih, int quality);
+   unsigned int getStatus(int idet, int ih);
    unsigned int getStatus(int idet, int ih, map<int,int> &sim2coa);
    void fillHit(int iSimRec, int idet,
 		double X, double Y, double Z, unsigned long cellID);
@@ -153,12 +162,19 @@ public :
    bool extrapolate(int idet, int ih, int jh);
    bool coalesce(int idet, vector<int> coalesced, SimTrackerHitData &hext);
    void extend(int idet, int ih, SimTrackerHitData &hext);
+   // ***** EVENT CONTROL, DEBUGGING
+   void initDetEvent();
+   void updateDetEvent(int idet, int ih);
+   void finaliseDetEvent();
+   bool moduleSelection(unsigned long cellID);
    void printHit(int idet,
 		 double X, double Y, double Z, unsigned long cellID);
-   void debugHit(int idet, int ih, SimTrackerHitData &hit, unsigned int status);
-   void debugRec(int idet, int ih, edm4eic::TrackerHitData &rec);
+   void debugHit(int idet, int ih, int nHs, SimTrackerHitData &hit, unsigned int status);
+   void debugHit(int idet, SimTrackerHitData &hit);
+   void debugRec(int idet, int ir);
+   void debugHitRec(int idet, int is, int ncoas, int cIndex, SimTrackerHitData &hit, int ir);
    void debugAssoc(int idet);
-   void debugAssoc(map<int,int>raw2rec, map<int,int> sim2coa, map<int,vector<int>> rec2sims);
+   void debugAssoc(int idet, map<int,int>raw2rec, map<int,int> sim2coa, map<int,vector<int>> rec2sims);
    static constexpr int violet = kMagenta+2, bleu = kBlue+1, vert = kGreen+2;
    static constexpr int jaune = kOrange+0, orange = kOrange+1, rouge  = kRed+0;
    static constexpr int marron = 50, gris   = 11;
@@ -217,8 +233,7 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
   processedDetectors = detectors; verbose = 0; select = 0;
   // ***** SELECTION
   requireNMCs =    0; // Default: no requirement
-  requireNHits =   0; // Default: no requirement
-  requireModule = -1; // Default: all staves
+  requireModules = 0; // Default: all modules allowed
   requirePDG =     0; // Default: do not require any ID
   requireQuality = 0; // Default: do not require "SimTrackerHit::quality"
   // Check that arg. "hasStrips" fits the pattern of MPGDs
@@ -232,6 +247,7 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
   if (!hasStrips) nSensitiveSurfaces = 1;
   else            nSensitiveSurfaces = 5;
   iObjCreated = nObjCreated++;
+  evtToDebug = -1;
   Init(tree);
 }
 
@@ -1069,7 +1085,7 @@ void recoEvents::SetMinima(double min)
   recoEvents ana(events,0xf);
   ana.Loop();
   recoEvents ana2(events,0xf);
-  ana2.requireQuality = 1; // REQUIRE quality IN SimTrackerHit's
+  ana2.requireQuality = 1; // REQUIRE quality IN SimTrackerHits
   ana2.Loop();
   // ***** CyMBaL
   ana.DrawResiduals(0x1,0,2);
