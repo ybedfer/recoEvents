@@ -38,6 +38,8 @@ ana.DrawResiduals(1,0x1,0x6)
 ana2.DrawResiduals(1,0x1,0x6,cCyMBaLRes,3)
 // ***** PDF
 cCyMBaLRes->Print("cCyMBaLRes.pdf","EmbedFonts")
+// ***** Scan
+t->Scan("EventHeader.eventNumber:@MPGDBarrelHits.size():MPGDBarrelHits.cellID&0xffffffff:MPGDBarrelHits.quality:MPGDBarrelHits.cellID>>32:MPGDBarrelHits.momentum.z:@MPGDBarrelRawHits.size():MPGDBarrelRawHits.cellID&0xffffffff:MPGDBarrelRawHits.cellID>>32:@MPGDBarrelRecHits.size():MPGDBarrelRecHits.cellID&0xffffffff","@MPGDBarrelHits.size()","col=3d:2d:8llx:2d:8llx:6.2f:2d:8llx:8llx:2d:8llx",1,1555);
 */
 
 #ifndef recoEvents_h
@@ -80,7 +82,7 @@ cCyMBaLRes->Print("cCyMBaLRes.pdf","EmbedFonts")
 #include "edm4eic/InclusiveKinematicsData.h"
 #include "edm4hep/MCParticleData.h"
 #include "edm4eic/MCRecoParticleAssociationData.h"
-#include "edm4hep/TrackerHitData.h"
+//#include "edm4hep/TrackerHitData.h"
 
 using namespace std;
 using namespace edm4hep;
@@ -111,6 +113,7 @@ public :
    unsigned int processedDetectors;
    unsigned int stripMode;  // Pattern of detectors w/ strip readout
    bool reconstruction;
+   bool requireTraversing; // Conditions coalescing
    int getDetHit(int idet, int ih, double &X, double &Y, double &Z,
 		 unsigned int &module, unsigned int &div);
    // ***** EVENT CONTROL, DEBUGGING
@@ -136,6 +139,12 @@ public :
    // Depending upon setup, MPGDs can have more than one sensitive surfaces.
    // Can be 1, 2 or 5.
    int nSensitiveSurfaces;
+   // GEOMETRY
+   // CyMBal: 4 sectors * 8 staves, numbering from 0
+   static constexpr int nModules[N_DETs] =  {32,24,128,68};
+   static constexpr int moduleMns[N_DETs] = { 0, 0,  1, 1};
+   double thicknesses[N_DETs];
+   vector<double> radii[N_DETs];
 
    // ********** HISTOS
    // ***** SELECTION
@@ -162,6 +171,8 @@ public :
    bool extrapolate(int idet, int ih, int jh);
    bool coalesce(int idet, vector<int> coalesced, SimTrackerHitData &hext);
    void extend(int idet, int ih, SimTrackerHitData &hext);
+   bool checkTraversing(int idet, SimTrackerHitData &hit,
+			double &pathDepth, double &depth);
    // ***** EVENT CONTROL, DEBUGGING
    void initDetEvent();
    void updateDetEvent(int idet, int ih);
@@ -244,8 +255,21 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
     return;
   }
   stripMode = hasStrips;
-  if (!hasStrips) nSensitiveSurfaces = 1;
-  else            nSensitiveSurfaces = 5;
+  requireTraversing = false; // Default = coalesce all extrapolate-compatible hits
+  // ***** GEOMETRY
+  for (int idet = 0; idet<N_DETs; idet++) thicknesses[idet] = 0;
+  if (!hasStrips) {
+    nSensitiveSurfaces = 1;
+    thicknesses[0] = 3; thicknesses[2] = 3;
+  }
+  else {
+    nSensitiveSurfaces = 5;
+    const double thickness = (3-3*.01)/2; // 3mm thickness-3*HELPER SUBVOLUMES
+    thicknesses[0]=thicknesses[1] = thickness;
+    // CyMBaL = 2 radii, 4 sections
+    radii[0].push_back(556.755); radii[0].push_back(578.755);
+  }
+
   iObjCreated = nObjCreated++;
   evtToDebug = -1;
   Init(tree);
@@ -309,7 +333,12 @@ void recoEvents::Init(TTree *tree)
      const char *branchNames[N_DETs] = {
        "_MPGDBarrel","_OuterMPGDBarrel","_VertexBarrel","_SiBarrel"};
      const char *branchName = branchNames[idet];
+     //#define MCPARTICLE
+#ifdef MCPARTICLE
      string name(branchName); name += string("Hits_MCParticle");
+#else
+     string name(branchName); name += string("Hits_particle");
+#endif
      fChain->SetBranchAddress(name.c_str(),&amcs[idet],&amcBranches[idet]);
    }
    // ***** REC BRANCHES
@@ -449,7 +478,8 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     printf("\n");
     // *************** INSTANTIATE HISTOS
     // ***** SET HISTO RANGES 
-    double dX, dY, RAve, dR, ZMn, ZMx; int nMods, modMn, nDivs, nLayers;
+    double dX, dY, RAve, dR, ZMn, ZMx;
+    int nMods = nModules[idet], modMn = moduleMns[idet], nDivs, nLayers;
     double dUr = 0;
     if      (idet==0) { // ********** CyMBaL
       dX=dY = 600;
@@ -461,7 +491,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       // From: epic/compact/tracking/mpgd_barrel.xml
       //<constant name="MMOutwardFrameWidth"                    value="5.0*cm"/>
       ZMn = -1000; ZMx = 1380;
-      nMods=nDivs = 32; modMn = 0; // 4 sectors * 8 staves, numbering from 0
+      nDivs = nMods;
       nLayers = 1;
     }
     else if (idet==1) { // ********** µRWELL
@@ -478,7 +508,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       // UR: 224 for core part + 2*16 bins on the edge to get possible stray hits
       double dRangeUr = (modL+modW)*sqrt(2)/2;
       double deltaUr = dRangeUr/224; dUr = dRangeUr+16*deltaUr;
-      nMods = 24; nDivs = 2; modMn = 0; // Numbering from 1
+      nDivs = 2;
       nLayers = nDivs;
     }
     else if (idet==2) { // ********** VERTEX
@@ -488,7 +518,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       RAve = 80; dR = 50;
       // <constant name="VertexBarrel_length"             value="270.0*mm"/>
       ZMn = -135; ZMx = 135;
-      nMods = 128; nDivs = 3; modMn = 1; // 3 layers, numbering from 1
+      nDivs = 3; // 3 layers
       nLayers = nDivs;
     }
     else if (idet==3) { // ********** Si
@@ -499,7 +529,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       // <comment> projective cone at 45 degree </comment>
       // <constant name="SiBarrel_angle"                  value="TrackerPrimaryAngle"/>
       ZMn = -500; ZMx = 500;
-      nMods = 68; nDivs = 2; modMn = 1; // Numbering from 1
+      nDivs = 2;
       nLayers = nDivs;
     }
     // Z: 224 for core part + 2*16 bins on the edge to get possible stray hits

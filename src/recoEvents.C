@@ -12,7 +12,8 @@ unsigned int recoEvents::nObjCreated = 0;
 // Interfaces
 void getReducedCyMBaL(double X, double Y, unsigned int div,
 		      double &Xr, double &Yr, double &Rr, double &phir,
-		      int *zone = 0); // Whether in peak, L/R edge, else
+		      int *zone = 0, // Whether in peak, L/R edge, else
+		      double *rot = 0);   // Rotation angle
 void getReducedOuter(double X, double Y, double Z, unsigned int div,
 		     double &Rcphi, double &Xr, double &Yr,
 		     double &Ur, double &Vr);
@@ -329,6 +330,7 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     rs.Rr->Fill(dRr); rs.phir->Fill(dphir);
     if (doPrint) {
       if (strip==1 && fabs(dZ)>580) {
+      //if (strip==1 && fabs(dZ)>0) {
 	printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f %7.3f mm %7.3fπ\n",
 	       evtNum,cellID&0xffffffff,cellID>>32,X,Y,Z,Rr,phir/TMath::Pi());
 	printf("%16s %12s %7.2f,%7.2f,%8.2f %7.3f mm %7.3fπ  dZ %4.0f µm\n",
@@ -348,15 +350,17 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     rs.Ur->Fill(dUr); rs.Vr->Fill(dVr);
   }
   else if (doPrint) printf("\n");
-  }
+}
 void getReducedCyMBaL(double X, double Y, unsigned int div,
 		      double &Xr, double &Yr, double &Rr, double &phir,
-		      int *zone) // Whether in peak, L/R edge, else
+		      int *zone, // Whether in peak, L/R edge, else
+		      double *rot)   // Rotation angle
 {
   // Transform to centre of curvature of cylindrical tiles
   // and rotate to phi = 0
   unsigned int iz = div>>3;
   int iphi = div%8, jphi = iphi%2; double phic = iphi*TMath::Pi()/4;
+  if (rot) *rot = phic;
   //<constant name="MMRadial_offset"                        value="1.0*cm"/>
   double offset = 10; // mm
   double rc = (2*jphi-1)*offset/2;    // ...flip sign of offset
@@ -499,7 +503,7 @@ bool recoEvents::samePMO(int idet, int ih, int jh) {
   if ((verbose&0x100<<idet) || evtNum==evtToDebug) doDebug |= 0x100;
   if  (doDebug&0x100) {
     if (!(doDebug&0x20000)) {
-      printf("Evt #%d\n",evtNum); doDebug |= 0x20000;
+      printf("Evt #%d det %d\n",evtNum,idet); doDebug |= 0x20000;
     }
     int nHits = hits[idet]->size();
     printf("%2d/%d: PMO=%2d,%2d,%d (0x%08lx,0x%08lx), %2d/%d: PMO=%2d,%2d,%d (0x%08lx,0x%08lx)\n",
@@ -510,6 +514,32 @@ bool recoEvents::samePMO(int idet, int ih, int jh) {
 }
 bool recoEvents::extrapolate(int idet, int ih, int jh)
 {
+  // - Extrapolate hits along their momentum by half-distance.
+  // - Return true if compatibility w/in 25 µm (arbitrary value).
+  // - Next step is expected to be a coalescing of the compatible hits.
+  //  Coalescing which will assign to the resulting (coalesced) hit as a
+  //  position, the half-sum of the hits (this, most of the time, see method
+  //  "coalesce" for the details), typically sitting on the mid-plane of the
+  //  sensitive volume (= union of SUBVOLUMES).
+  // => Question: is the above compatibility criterion well grounded? What is
+  //  missing is the notion of traversing particle in MPGDTrackerDigi. Which
+  //  I illustrate w/ the example of a delta-ray emitted w/in one SUBVOLUME. In
+  //  such a case, as far as I understand, DD4hep produces two hits:
+  //   + Primary, sitting not on mid-plane,
+  //   + Secondary.
+  //  The primary has a continuation into the next (or previous) SUBVOLUME,
+  //  compatible w/ it in the above sense. Then one has to distinguish two
+  //  sub-cases, depending on the ordering along the thickness axis:
+  //   i) Secondary < primary   < continuation,
+  //  ii) Primary   < secondary < continuation.
+  //   Sub-case (i) is the only legitimate primary+continuation coalescing.
+  /// - Here, we can identify cases where there is a secondary based on the
+  //   sole info contained in the input hit (w/o having to scan the list of all
+  //   SimHits): would suffice to check the ''depth'' of the hit along the
+  //   thickness axis against expectation = thickness, which will also catch
+  //   cases where the particle exits the sensitive volume through the edge (
+  //   see "requireTraversing") and compare the hit position to the mid-plane
+  //   to determine which sub-case we are in.
   SimTrackerHitData &hit = hits[idet]->at(ih), &hjt = hits[idet]->at(jh);
   const Vector3d &pos = hit.position, &pqs = hjt.position;
   double Mx = pos.x, My = pos.y, Mz = pos.z;
@@ -522,8 +552,17 @@ bool recoEvents::extrapolate(int idet, int ih, int jh)
   double v = dist/2/Q, Fx = Nx-v*Qx, Fy = Ny-v*Qy, Fz = Nz-v*Qz;
   double dext = sqrt((Ex-Fx)*(Ex-Fx)+(Ey-Fy)*(Ey-Fy)+(Ez-Fz)*(Ez-Fz));
   bool ok = dext<.025;
-  bool doPrint = verbose&0x100<<idet;
+  // Debugging
+  if ((verbose&0x100<<idet) || evtNum==evtToDebug) doDebug |= 0x100;
+  if  (doDebug&0x100) {
+    if (!(doDebug&0x20000)) {
+      printf("Evt #%d det %d\n",evtNum,idet); doDebug |= 0x20000;
+    }
+  }
+  bool doPrint = doDebug&0x100;
   if (!doPrint && !ok) {
+    // Do print debugging message, even if not requested, when extrpolation
+    // turns out to fail in case status is 0x3.
     unsigned status = getStatus(idet,ih); doPrint = status==0x3;
   }
   if (doPrint) {
@@ -532,6 +571,34 @@ bool recoEvents::extrapolate(int idet, int ih, int jh)
 	   ih,hit.cellID&0xffffffff,hit.cellID>>32,Mx,My,Mz,Ex,Ey,Ez);
     printf("%2d: 0x%08lx 0x%08lx %.2f,%.2f,%.2f -> %.2f,%.2f,%.2f\n",
 	   jh,hjt.cellID&0xffffffff,hjt.cellID>>32,Nx,Ny,Nz,Fx,Fy,Fz);
+  }
+  if (ok && requireTraversing) {
+    if (idet==0) {
+      double pathDepth, depth, pathDfpth, dfpth;
+      bool traversing = checkTraversing(idet,hit,pathDepth,depth);
+      bool traversjng = checkTraversing(idet,hjt,pathDfpth,dfpth); 
+      int subVolID = hit.cellID>>28&0xf, subVolJD = hjt.cellID>>28&0xf;
+      unsigned int continuation = 0;
+      if (traversing) continuation |= 0x1;
+      if (traversjng) continuation |= 0x2;
+      for (int ij = 0; ij<2; ij++) {
+	if (continuation&0x1<<ij) continue;
+	// Try and rescue cases where traversing to one side.
+	double Rr = ij==0 ? depth : dfpth;
+	bool is0x3 = subVolID==0x3 || subVolJD==0x3;
+	int module = hit.cellID>>12&0xfff;
+	int sector = module/8; int inOut = (sector==1 || sector==2) ? 0 : 1;
+	double midPlane = radii[0][inOut];
+	bool isInner = is0x3 ? Rr > midPlane : Rr < midPlane;
+	if (isInner) continuation |= 0x4<<ij;
+      }
+      if (doPrint)
+	printf("(Evt%d)0x%04x %d: 0x%x %.3f %.3f %.3f, %d: 0x%x %.3f %.3f %.3f\n",
+	       evtNum,continuation,
+	       ih,subVolID,depth,hit.pathLength,pathDepth,
+	       jh,subVolJD,dfpth,hjt.pathLength,pathDfpth);
+      ok = (continuation&0x5) && (continuation&0xa);
+    }
   }
   return ok;
 }
@@ -544,7 +611,7 @@ bool recoEvents::coalesce(int idet, vector<int> coalesced, SimTrackerHitData &he
     else if (subVolID==0x4) ih4 = ih;
     else if (subVolID==0x0) ih0 = ih;
     else if (ih0<0)         ih0 = ih;
-    eDep += hit.EDep;
+    eDep += hit.eDep;
   }
   if (ih3>=0 && ih4>=0) {
     SimTrackerHitData &hit = hits[idet]->at(ih3), &hjt = hits[idet]->at(ih4);
@@ -552,13 +619,13 @@ bool recoEvents::coalesce(int idet, vector<int> coalesced, SimTrackerHitData &he
     double Mx = pos.x, My = pos.y, Mz = pos.z;
     double Nx = pqs.x, Ny = pqs.y, Nz = pqs.z;
     Vector3d pext; pext.x = (Mx+Nx)/2; pext.y = (My+Ny)/2; pext.z = (Mz+Nz)/2;
-    hext.position = pext; hext.EDep = eDep;
+    hext.position = pext; hext.eDep = eDep;
     hext.cellID = hit.cellID; hext.quality = hit.quality;
     return true;
   }
   else if (ih0>=0) {
     SimTrackerHitData &hit = hits[idet]->at(ih0);
-    hext.position = hit.position; hext.EDep = eDep;
+    hext.position = hit.position; hext.eDep = eDep;
     hext.cellID = hit.cellID; hext.quality = hit.quality;
     return true;
   }
@@ -577,6 +644,8 @@ bool recoEvents::coalesce(int idet, vector<int> coalesced, SimTrackerHitData &he
 void recoEvents::extend(int idet, int ih, SimTrackerHitData &hext)
 {
   // Extend along P by pathLength/2.
+  // - So that hit be sitting close to mid-plane of overall sensitive volume (
+  //  this, for a 0x(3|)4 hit; not for a 0x(0|1|2) one, already close enough).
   // - Expected to be called for hit <ih> being...
   //  ...primary,
   //  ...w/o any counterpart.
@@ -585,32 +654,69 @@ void recoEvents::extend(int idet, int ih, SimTrackerHitData &hext)
   //  MPGDTrackerDigi (which in turn tries and emulates what we would get w/ a
   //  single sensitive volume).
   //   It's an approximation: extrapolation should go up to REFERENCE SUBVOLUME.
-  //  But it's the best we can do, w/o knowledge of the detector geometry.
+  //  But it's a good enough approximation.
+  // - There are yet cases where extension should not be performed:
+  //   + Primary + secondary (delta-ray) w/in SUBVOLUME, see comment in
+  //  "extrapolate". => Dependence upon primary vs. secondary ordering. => If
+  //  primary hit is sitting on the outer side w.r.t. mid-plane, do not extend.
+  //   + Exit through the edge: same thing.
   SimTrackerHitData &hit = hits[idet]->at(ih); unsigned long cID = hit.cellID;
   const Vector3d &pos = hit.position; double Mx = pos.x, My = pos.y, Mz = pos.z;
   const Vector3f &mom = hit.momentum; double Px = mom.x, Py = mom.y, Pz = mom.z;
   double P = sqrt(Px*Px+Py*Py+Pz*Pz), Ex, Ey, Ez;
-  int subVolID = hit.cellID>>28&0xf; if (subVolID==3) {
-    double u =  hit.pathLength/2/P;  Ex = Mx+u*Px; Ey = My+u*Py; Ez = Mz+u*Pz;
+  if ((verbose&0x100<<idet) || evtNum==evtToDebug) doDebug |= 0x100;
+  if  (doDebug&0x100) {
+    if (!(doDebug&0x20000)) {
+      printf("Evt #%d det %d\n",evtNum,idet); doDebug |= 0x20000;
+    }
   }
-  else if (subVolID==4) {
-    double u = -hit.pathLength/2/P; Ex = Mx+u*Px; Ey = My+u*Py; Ez = Mz+u*Pz;
+  bool doExtend = true; int direction = +1;
+  int subVolID = hit.cellID>>28&0xf; if (subVolID==0x3 || subVolID==0x4) {
+    // Determine pathDepth, i.e. path projected along cylinder's radius
+    if (idet==0) {
+      double pathDepth, Rr; doExtend = checkTraversing(idet,hit,pathDepth,Rr);
+      if ((doDebug&0x100) && doExtend)
+	printf(" 0x%08lx,0x%08lx Traversing? %d: pathDepth %.3f Rr %.3f\n",
+	       cID&0xffffffff,cID>>32,doExtend,pathDepth,Rr);
+      if (!doExtend) {
+	// Try and rescue cases where traversing to one side.
+	int module = hit.cellID>>12&0xfff;
+	int sector = module/8; int inOut = (sector==1 || sector==2) ? 0 : 1;
+	double midPlane = radii[0][inOut];
+	bool isInner = subVolID==0x3 ? Rr > midPlane : Rr < midPlane;
+	doExtend = isInner;
+	if (doDebug&0x100)
+	  printf(" 0x%08lx,0x%08lx Traversing? %d: pathDepth %.3f Rr %.3f/%.3f\n",
+		 cID&0xffffffff,cID>>32,doExtend,pathDepth,Rr,midPlane);
+      }
+      direction = pathDepth>0 ? +1 : -1;
+    }
+    if (doExtend) {
+      if (subVolID==3) {
+	double u =  direction*hit.pathLength/2/P;
+	Ex = Mx+u*Px; Ey = My+u*Py; Ez = Mz+u*Pz;
+      }
+      else if (subVolID==4) {
+	double u = -direction*hit.pathLength/2/P;
+	Ex = Mx+u*Px; Ey = My+u*Py; Ez = Mz+u*Pz;
+      }
+    }
   }
-  else {
+  if (!doExtend) {
     Ex = Mx; Ey = My; Ez = Mz;
   }
   Vector3d pext; pext.x = Ex; pext.y = Ey; pext.z = Ez;
-  hext.position = pext; hext.EDep = hit.EDep;
+  hext.position = pext; hext.eDep = hit.eDep;
   hext.cellID = hit.cellID; hext.quality = hit.quality;
-  if (verbose&0x100<<idet) {
+  if (doDebug&0x100) {
     printf("%d extend\n",ih);
     if (idet==0) {
       unsigned int module, div, strip; parseCellID(idet,hit.cellID,module,div,strip);
       double Xr, Yr, Rr, phir;
-      getReducedCyMBaL(Mx,My,div,Xr,Yr,Rr,phir); double Mr = Rr;
-      getReducedCyMBaL(Ex,Ey,div,Xr,Yr,Rr,phir); double Er = Rr;
+      getReducedCyMBaL(Mx,My,div,Xr,Yr,Rr,phir); double MR = Rr;
+      getReducedCyMBaL(Ex,Ey,div,Xr,Yr,Rr,phir); double ER = Rr;
       printf(" 0x%08lx 0x%08lx %.2f,%.2f,%.2f (%.3f) -> %.2f,%.2f,%.2f (%.3f) mm\n",
-	     hit.cellID&0xffffffff,hit.cellID>>32,Mx,My,Mz,Mr,Ex,Ey,Ez,Er);
+	     hit.cellID&0xffffffff,hit.cellID>>32,Mx,My,Mz,MR,Ex,Ey,Ez,ER);
     }
     else
       printf(" 0x%08lx 0x%08lx %.2f,%.2f,%.2f -> %.2f,%.2f,%.2f mm\n",
@@ -618,7 +724,28 @@ void recoEvents::extend(int idet, int ih, SimTrackerHitData &hext)
       
   }
 }
-// ***** EVENT CONTROL, DEBUGGING
+bool recoEvents::checkTraversing(int idet, SimTrackerHitData &hit,
+				 double &pathDepth, double &depth)
+{
+  bool traversing = true;
+  const Vector3d &pos = hit.position;
+  double Mx = pos.x, My = pos.y, Mz = pos.z;
+  const Vector3f &mom = hit.momentum;
+  double Px = mom.x, Py = mom.y, Pz = mom.z, P = sqrt(Px*Px+Py*Py+Pz*Pz);
+  unsigned int module, div, strip; parseCellID(idet,hit.cellID,module,div,strip);
+  int subVolID = hit.cellID>>28&0xf;
+  if (idet==0  && (subVolID==0x3 || subVolID==0x4)) {
+    double Xr, Yr, Rr, phir, rot;
+    getReducedCyMBaL(Mx,My,div,Xr,Yr,Rr,phir,0,&rot);
+    double crot = std::cos(rot), srot = std::sin(rot);
+    double Pxr = crot*Px+srot*Py, Pyr = -srot*Px+crot*Py;
+    double cTheta = (Pxr*Xr+Pyr*Yr)/P/sqrt(Xr*Xr+Yr*Yr);
+    pathDepth = hit.pathLength*cTheta; depth = Rr;
+    double thickness = thicknesses[idet];
+    traversing = fabs(fabs(pathDepth)-thickness)<.200; // Somewhat large 200 µm tolerance
+  }
+  return traversing;
+}
 // ***** EVENT CONTROL, DEBUGGING
 void recoEvents::initDetEvent()
 {
@@ -680,10 +807,10 @@ void recoEvents::debugHit(int idet, int ih, int nHs, SimTrackerHitData &hit, uns
   if ((verbose&0x1<<idet) || evtNum==evtToDebug) doDebug |= 0x1;
   if (doDebug&0x1) {
     if (!(doDebug&0x20000)) {
-      printf("Evt #%d\n",evtNum); doDebug |= 0x20000;
+      printf("Evt #%d det %d\n",evtNum,idet); doDebug |= 0x20000;
     }
     const Vector3d &pos = hit.position;
-    printf("hit %2d/%-2d: 0x%08lx,0x%08lx %7.2f,%7.2f,%8.2f 0x%x\n",
+    printf("hit %2d/%-2d: 0x%08lx,0x%08lx X,Y,Z %7.2f,%7.2f,%8.2f status 0x%x\n",
 	   ih,nHs,hit.cellID&0xffffffff,hit.cellID>>32,
 	   pos.x,pos.y,pos.z,status);
   }
@@ -717,12 +844,12 @@ void recoEvents::printHit(int idet,
   }
   else if (idet==0) {
     double Xr, Yr, Rr, phir; getReducedCyMBaL(X,Y,div,Xr,Yr,Rr,phir);
-    printf("%10s 0x%08lx,0x%08x %7.2f,%7.2f,%8.2f Rr %7.3f mm phir %6.3fπ\n",
+    printf("%10s 0x%08lx,0x%08x X,Y,Z %7.2f,%7.2f,%8.2f Rr %7.3f mm phir %6.3fπ\n",
 	   "",cellID&0xffffffff,cell,X,Y,Z,Rr,phir/pi);
   }
   else if (idet==1) {
     double Rcdphi, Xr, Yr, Ur, Vr; getReducedOuter(X,Y,Z,module,Rcdphi,Xr,Yr,Ur,Vr);
-    printf("%10s 0x%08lx,0x%08x %7.2f,%7.2f,%8.2f Rr %7.3f U,V %7.2f,%7.2f mm\n",
+    printf("%10s 0x%08lx,0x%08x X,Y,Z %7.2f,%7.2f,%8.2f Rr %7.3f U,V %7.2f,%7.2f mm\n",
 	   "",cellID&0xffffffff,cell,X,Y,Z,Rcdphi,Ur,Vr);
   }
   else {
@@ -754,7 +881,7 @@ void recoEvents::debugAssoc(int idet)
   if (verbose&0x10<<idet) doDebug |= 0x10;
   if (doDebug&0x10) {
     if (!(doDebug&0x20000)) {
-      printf("Evt #%d\n",evtNum); doDebug |= 0x20000;
+      printf("Evt #%d det %d\n",evtNum,idet); doDebug |= 0x20000;
     }
     int nArhs = arhs[idet]->size(); // Associations raw hit
     int nAshs = ashs[idet]->size(); // Associations sim hit
