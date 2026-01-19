@@ -140,11 +140,16 @@ public :
    // Can be 1, 2 or 5.
    int nSensitiveSurfaces;
    // GEOMETRY
-   // CyMBal: 4 sectors * 8 staves, numbering from 0
+   // CyMBal: 4 sections * 8 staves, numbering from 0
    static constexpr int nModules[N_DETs] =  {32,24,128,68};
    static constexpr int moduleMns[N_DETs] = { 0, 0,  1, 1};
-   double thicknesses[N_DETs];
+   double volumeThicknesses[N_DETs];   // Overall thickness
+   double radiatorThicknesses[N_DETs]; // Thickness of RADIATOR SUBVOLUME
    vector<double> radii[N_DETs];
+   int nSections[N_DETs];
+   vector<double> sectionDZs[N_DETs]; // Transform global -> local
+   vector<double> phiHWidths[N_DETs]; // HalfWidths
+   double ZHWidths[N_DETs];           // HalfWidths
 
    // ********** HISTOS
    // ***** SELECTION
@@ -167,12 +172,19 @@ public :
    void parseCellID(int idet, unsigned long ID,
 		    unsigned int &module, unsigned int &div, unsigned int &strip);
    bool parseStrip(int idet, int simOrRec, unsigned int &strip);
+   void g2lCyMBaL(double X,   double Y,   double Z, unsigned int div,
+		  double &Xr, double &Yr, double &Zr,
+		  double &Rr, double &phir,
+		  int *zone = 0, // Whether in peak, L/R edge, else
+		  double *rot = 0);
+   void l2gCyMBaL(double *lpos, int div, double *gpos);
    bool samePMO(int idet, int ih, int jh);
    bool extrapolate(int idet, int ih, int jh);
    bool coalesce(int idet, vector<int> coalesced, SimTrackerHitData &hext);
    void extend(int idet, int ih, SimTrackerHitData &hext);
    bool checkTraversing(int idet, SimTrackerHitData &hit,
 			double &pathDepth, double &depth);
+   bool extendHit(int idet, int ih, int direction, double *lext);
    // ***** EVENT CONTROL, DEBUGGING
    void initDetEvent();
    void updateDetEvent(int idet, int ih);
@@ -203,6 +215,8 @@ public :
    Histos simHs[N_DETs], recHs[2][N_DETs];
    Resids resHs[2][N_DETs];
    TH1D *hMult;
+   void DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
+		   bool addToPreExisting = false);
 
    // ***** BRANCHES
    vector<SimTrackerHitData> *hits[N_DETs];
@@ -257,17 +271,28 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
   stripMode = hasStrips;
   requireTraversing = false; // Default = coalesce all extrapolate-compatible hits
   // ***** GEOMETRY
-  for (int idet = 0; idet<N_DETs; idet++) thicknesses[idet] = 0;
+  for (int idet = 0; idet<N_DETs; idet++) {
+    volumeThicknesses[idet]=radiatorThicknesses[idet] = 0;
+  }
   if (!hasStrips) {
     nSensitiveSurfaces = 1;
-    thicknesses[0] = 3; thicknesses[2] = 3;
+    volumeThicknesses[0] =   3; volumeThicknesses[2] =   3;
+    radiatorThicknesses[0] = 0; radiatorThicknesses[2] = 0;
   }
   else {
     nSensitiveSurfaces = 5;
-    const double thickness = (3-3*.01)/2; // 3mm thickness-3*HELPER SUBVOLUMES
-    thicknesses[0]=thicknesses[1] = thickness;
+    const double volThickness = 3;           // 3mm thickness
+    volumeThicknesses[0]=volumeThicknesses[1]     = volThickness;
+    const double radThickness = (3-3*.01)/2; // 3mm thickness-3*HELPER SUBVOLUMES
+    radiatorThicknesses[0]=radiatorThicknesses[1] = radThickness;
     // CyMBaL = 2 radii, 4 sections
     radii[0].push_back(556.755); radii[0].push_back(578.755);
+    const int nSs = 4; nSections[0] = nSs;
+    double dZs[nSs] = {670.0,103.5,-528.5,-1095.0}; // mm
+    for (int section = 0; section<nSs; section++)
+      sectionDZs[0].push_back(dZs[section]);
+    phiHWidths[0].push_back(0.41441); phiHWidths[0].push_back(0.39861);
+    ZHWidths[0] = 305;
   }
 
   iObjCreated = nObjCreated++;
