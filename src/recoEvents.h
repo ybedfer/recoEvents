@@ -29,6 +29,8 @@ ana.Loop();                 // For debugging: "Loop(<nEvents>,<firstEvent>)"
 ana.DrawphithZR(0,0xf,true); // Draw SimHits, w/ if true, colour highlighting of module type.
 ana.DrawphithZR(1,0xf,true); // Draw RecHits (1: 1st coord, 2: 2nd coord), w/ if true, colour highlighting of module type.
 ana.DrawResiduals(1,0x1);    // Draw residuals RecHit-SimHit for phi (iRec=1) of CyMBaL (=0x1)
+ana.DrawSimHit(3328,0x1,0);  // Draw 0th SimHit of evt #3328
+ana.DrawSimHit(3328,0x1,4,1);// Superimpose 4th SimHit of evt #3328
 // Direct access to histograms
 ana.recHs[0][0].ZR[0]; h2->SetTitle("CyMBaL Rec"); h2->Draw(); SetPaveText(h2,0);
 // ***** SEVERAL recoEvents OBJECTS
@@ -40,6 +42,7 @@ ana2.DrawResiduals(1,0x1,0x6,cCyMBaLRes,3)
 cCyMBaLRes->Print("cCyMBaLRes.pdf","EmbedFonts")
 // ***** Scan
 t->Scan("EventHeader.eventNumber:@MPGDBarrelHits.size():MPGDBarrelHits.cellID&0xffffffff:MPGDBarrelHits.quality:MPGDBarrelHits.cellID>>32:MPGDBarrelHits.momentum.z:@MPGDBarrelRawHits.size():MPGDBarrelRawHits.cellID&0xffffffff:MPGDBarrelRawHits.cellID>>32:@MPGDBarrelRecHits.size():MPGDBarrelRecHits.cellID&0xffffffff","@MPGDBarrelHits.size()","col=3d:2d:8llx:2d:8llx:6.2f:2d:8llx:8llx:2d:8llx",1,1555);
+t->Scan("EventHeader.eventNumber:@OuterMPGDBarrelHits.size():OuterMPGDBarrelHits.cellID&0xffffffff:OuterMPGDBarrelHits.quality:OuterMPGDBarrelHits.cellID>>32:OuterMPGDBarrelHits.momentum.x:OuterMPGDBarrelHits.momentum.y:OuterMPGDBarrelHits.momentum.z:@MCParticles.size():MCParticles[2].MCParticles.PDG","@OuterMPGDBarrelHits.size()","col=4d:2d:8llx:2d:8llx:6.2f:6.2f:6.2f:2d:2d",1,14724);
 */
 
 #ifndef recoEvents_h

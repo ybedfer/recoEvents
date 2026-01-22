@@ -303,7 +303,7 @@ void recoEvents::fillHit(int simOrRec, int idet,
 void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim, unsigned long cellID)
 {
   int doPrint = 0;
-  if (verbose&0x1000<<idet) {
+  if (verbose&0x1000<<idet || evtNum==evtToDebug) {
     doPrint = 1; if (verbose&0x10000) doPrint = 2;
   }
   double X =  pos.x,  Y =  pos.y,  Z =  pos.z;
@@ -331,12 +331,17 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     double dRr = 1000*(Rr-Rrs), dphir = 1000*(phir-phirs);
     rs.Rr->Fill(dRr); rs.phir->Fill(dphir);
     if (doPrint) {
-      if (strip==1 && fabs(dZ)>580) {
-      //if (strip==1 && fabs(dZ)>0) {
+      if (strip==1 && fabs(dZ)>580 || strip==0 && fabs(dphir)>1) {
+	//if (strip==1 && fabs(dZ)>0) {
+	char text[] ="dφ 1.810 mrd";
+	//           "dZ 1000 µm";
+	size_t lt = strlen(text)+1;
+	if (strip==1) snprintf(text,lt,"dZ %4.0f µm",dZ);
+	else          snprintf(text,lt,"dφ %5.3f mrd",dphir);
 	printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f %7.3f mm %7.3fπ\n",
 	       evtNum,cellID&0xffffffff,cellID>>32,X,Y,Z,Rr,phir/TMath::Pi());
-	printf("%16s %12s %7.2f,%7.2f,%8.2f %7.3f mm %7.3fπ  dZ %4.0f µm\n",
-	       "SimHit","",Xs,Ys,Zs,Rrs,phirs/TMath::Pi(),dZ);
+	printf("%16s %12s %7.2f,%7.2f,%8.2f %7.3f mm %7.3fπ  %s\n",
+	       "SimHit","",Xs,Ys,Zs,Rrs,phirs/TMath::Pi(),text);
       }
     }
   }
@@ -350,6 +355,18 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     rs.Rr->Fill(dRcdphi);
     double dUr = 1000*(Ur-Urs), dVr = 1000*(Vr-Vrs);
     rs.Ur->Fill(dUr); rs.Vr->Fill(dVr);
+    if (doPrint) {
+      if (strip==0 && fabs(dUr)>580 || strip==1 && fabs(dVr)>580) {
+      //if (strip==1 && fabs(dU)>0) {
+	char text[] ="dU 1000 µm"; size_t lt = strlen(text)+1;
+	if (strip==1) snprintf(text,lt,"dV %4.0f µm",dVr);
+	else          snprintf(text,lt,"dU %4.0f µm",dUr);
+	printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f %7.3f %7.3f mm\n",
+	       evtNum,cellID&0xffffffff,cellID>>32,X,Y,Z,Ur,Vr);
+	printf("%16s %12s %7.2f,%7.2f,%8.2f %7.3f %7.3f mm %s\n",
+	       "SimHit","",Xrs,Yrs,Zs,Urs,Vrs,text);
+      }
+    }
   }
   else if (doPrint) printf("\n");
 }
@@ -572,7 +589,7 @@ bool recoEvents::extrapolate(int idet, int ih, int jh)
   double Mx = pos.x, My = pos.y, Mz = pos.z;
   double Nx = pqs.x, Ny = pqs.y, Nz = pqs.z;
   double dist = sqrt((Mx-Nx)*(Mx-Nx)+(My-Ny)*(My-Ny)+(Mz-Nz)*(Mz-Nz));
-  const Vector3f &mom = hit.momentum, mqm = hjt.momentum;
+  const Vector3f &mom = hit.momentum, &mqm = hjt.momentum;
   double Px = mom.x, Py = mom.y, Pz = mom.z, P = sqrt(Px*Px+Py*Py+Pz*Pz);
   double Qx = mqm.x, Qy = mqm.y, Qz = mqm.z, Q = sqrt(Qx*Qx+Qy*Qy+Qz*Qz);
   double u = dist/2/P, Ex = Mx+u*Px, Ey = My+u*Py, Ez = Mz+u*Pz;
@@ -640,14 +657,49 @@ bool recoEvents::coalesce(int idet, vector<int> coalesced, SimTrackerHitData &he
     else if (ih0<0)         ih0 = ih;
     eDep += hit.eDep;
   }
-  if (ih3>=0 && ih4>=0) {
-    SimTrackerHitData &hit = hits[idet]->at(ih3), &hjt = hits[idet]->at(ih4);
-    const Vector3d &pos = hit.position, &pqs = hjt.position;
+  if (ih3>=0 && ih4>=0) { // ***** 0x7-COALESCENCE
+    // - Set position = 1/2sum of hits extrapolated by 1/2-pathLength.
+    SimTrackerHitData &h3t = hits[idet]->at(ih3), &h4t = hits[idet]->at(ih4);
+    const Vector3d &pos = h3t.position, &pqs = h4t.position;
     double Mx = pos.x, My = pos.y, Mz = pos.z;
     double Nx = pqs.x, Ny = pqs.y, Nz = pqs.z;
-    Vector3d pext; pext.x = (Mx+Nx)/2; pext.y = (My+Ny)/2; pext.z = (Mz+Nz)/2;
+    const Vector3f &mom = h3t.momentum, &mqm = h4t.momentum;
+    double Px = mom.x, Py = mom.y, Pz = mom.z, P = sqrt(Px*Px+Py*Py+Pz*Pz);
+    double Qx = mqm.x, Qy = mqm.y, Qz = mqm.z, Q = sqrt(Qx*Qx+Qy*Qy+Qz*Qz);
+    // Extrapolate to extrema
+    double Exs[2][2], Eys[2][2], Ezs[2][2]; // [for/backward][3,4]
+    int fb; for (fb = 0; fb<2; fb++) {
+      int s = fb ? -1 : +1;
+      for (int i34 = 0; i34<2; i34++) {
+	double &Ex = Exs[fb][i34], &Ey = Eys[fb][i34], &Ez = Ezs[fb][i34];
+	if (i34==0) {
+	  double u = s*h3t.pathLength/2/P;
+	  Ex = Mx+u*Px; Ey = My+u*Py; Ez = Mz+u*Pz;
+	} else {
+	  double u = s*h4t.pathLength/2/Q;
+	  Ex = Nx+u*Qx; Ey = Ny+u*Qy; Ez = Nz+u*Qz;
+	}
+      }
+    }
+    // Which pair of extrema do we retain? largest distance
+    double d2s[2]; for (fb = 0; fb<2; fb++) {
+      int bf = 1-fb;
+      double dx = Exs[fb][0]-Exs[bf][1], dy = Eys[fb][0]-Eys[bf][1], dz = Ezs[fb][0]-Ezs[bf][1];
+      d2s[fb] = dx*dx+dy*dy+dz*dz;
+    }
+    fb = d2s[0]>d2s[1] ? 0 : 1; int bf = 1-fb;
+    // Position of coalesced = half-sum of extrema
+    double Ex = Exs[fb][0], Ey = Eys[fb][0], Ez = Ezs[fb][0];
+    double Fx = Exs[bf][1], Fy = Eys[bf][1], Fz = Ezs[bf][1];
+    Vector3d pext; pext.x = (Ex+Fx)/2; pext.y = (Ey+Fy)/2; pext.z = (Ez+Fz)/2;
     hext.position = pext; hext.eDep = eDep;
-    hext.cellID = hit.cellID; hext.quality = hit.quality;
+    hext.cellID = h3t.cellID;
+    hext.quality = h3t.quality; // Coalesced hits passed samePMO => same quality
+    if (doDebug)
+      printf("%d(0x%08lx,0x%08lx,%.2f,%.2f,%.2f) + %d(0x%08lx,0x%08lx,%.2f,%.2f,%.2f) -> %.2f,%.2f,%.2f\n",
+	     ih3,h3t.cellID&0xffffffff,h3t.cellID>>32,Mx,My,Mz,
+	     ih4,h4t.cellID&0xffffffff,h4t.cellID>>32,Nx,Ny,Nz,
+	     pext.x,pext.y,pext.z);
     return true;
   }
   else if (ih0>=0) {
@@ -907,7 +959,7 @@ void recoEvents::debugHitRec(int idet, int is, int ncoas, int cIndex, SimTracker
   if ((verbose&0x10<<idet) || evtNum==evtToDebug) {
     int nRecs = recs[idet]->size();
     edm4eic::TrackerHitData &rec = recs[idet]->at(ir);
-    printf("#%5d %d/%d:%d(0x%08lx,0x%08lx) %d/%d 0x%08lx,0x%08lx\n",evtNum,
+    printf("SimHit %d/%d:%d(0x%08lx,0x%08lx) RecHit %d/%d 0x%08lx,0x%08lx\n",
 	   is,ncoas,cIndex,hit.cellID&0xffffffff,hit.cellID>>32,
 	   ir,nRecs,rec.cellID&0xffffffff,rec.cellID>>32);
   }
@@ -1254,12 +1306,14 @@ void DrawHit(double *pars, double *lpos, double *lmom, double path, double *r2s)
   
   // Draw <lpos>
   double w = .0125;
-  TLine *tl = new TLine;
+  int  orange = kOrange+1;
+  TLine *tl = new TLine; tl->SetLineColor(orange);
   double Mx = lpos[0], My = lpos[1];
   tl->DrawLine(Mx-w,My,Mx+w,My); tl->DrawLine(Mx,My-w,Mx,My+w);
 
   // Draw <lpos>+/-path/2
   // Extrema
+  TLine *tp = new TLine; tp->SetLineColor(1);
   double xMn = xUp, xMx = xLow, yMn = yUp, yMx = yLow;
   double Px = lmom[0], Py = lmom[1], Pz = lmom[2];
   double norm = sqrt(Px*Px+Py*Py+Pz*Pz), at = path/2/norm;
@@ -1270,8 +1324,8 @@ void DrawHit(double *pars, double *lpos, double *lmom, double path, double *r2s)
 #endif
   for (int s = -1; s<=+1; s += 2) {
     double Nx = Mx+s*at*Px, Ny = My+s*at*Py;
-    tl->DrawLine(Mx,My,Nx,Ny);
-    tl->DrawLine(Nx-w,Ny,Nx+w,Ny); tl->DrawLine(Nx,Ny-w,Nx,Ny+w);
+    tp->DrawLine(Mx,My,Nx,Ny);
+    tp->DrawLine(Nx-w,Ny,Nx+w,Ny); tp->DrawLine(Nx,Ny-w,Nx,Ny+w);
     if (Nx-w<xMn) xMn = Nx-w; if (Ny-w<yMn) yMn = Ny-w;
     if (Nx+w>xMx) xMx = Nx+w; if (Ny+w>yMx) yMx = Ny+w;
 #ifdef DEBUG_DRAWHIT
@@ -1310,18 +1364,20 @@ void DrawHit(double *pars, double *lpos, double *lmom, double path, double *r2s)
 void AddHit(double *lpos, double *lmom, double path)
 {
   // Draw <lpos>
-  double w = .0125;
-  int violet = kMagenta+2;
-  TLine *tl = new TLine; tl->SetLineColor(violet);
+  //double w = .0125;
+  double w = .025;
+  int  vert = kGreen+2;
+  TLine *tl = new TLine; tl->SetLineColor(vert);
   double Mx = lpos[0], My = lpos[1];
   tl->DrawLine(Mx-w,My,Mx+w,My); tl->DrawLine(Mx,My-w,Mx,My+w);
 
   // Draw <lpos>+/-path/2
+  TLine *tp = new TLine; tp->SetLineColor(1);
   double Px = lmom[0], Py = lmom[1], Pz = lmom[2];
   double norm = sqrt(Px*Px+Py*Py+Pz*Pz), at = path/2/norm;
   for (int s = -1; s<=+1; s += 2) {
     double Nx = Mx+s*at*Px, Ny = My+s*at*Py;
-    tl->DrawLine(Mx,My,Nx,Ny);
-    tl->DrawLine(Nx-w,Ny,Nx+w,Ny); tl->DrawLine(Nx,Ny-w,Nx,Ny+w);
+    tp->DrawLine(Mx,My,Nx,Ny);
+    tp->DrawLine(Nx-w,Ny,Nx+w,Ny); tp->DrawLine(Nx,Ny-w,Nx,Ny+w);
   }
 }
