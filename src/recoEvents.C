@@ -10,9 +10,6 @@
 unsigned int recoEvents::nObjCreated = 0;
 
 // Interfaces
-void getReducedOuter(double X, double Y, double Z, unsigned int div,
-		     double &Rcphi, double &Xr, double &Yr,
-		     double &Ur, double &Vr);
 unsigned int cExtension(double const* lpos, double const* lmom, // Input subHit
 			double rT,                              // Target radius
 			int direction, double dZ, double startPhi,
@@ -90,6 +87,18 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	// ********** LOOP ON sim HITS: COALESCING AND EXTENDING
 	// -> "coalescedHs"
 	SimTrackerHitData &hit = hits[idet]->at(ih);
+	/*
+	if ((hit.cellID&0xff)==0x40 && (hit.cellID>>28&0xf)==0x0) {
+	  unsigned long cellID = hit.cellID;
+	  int module = cellID>>12&0xfff;
+	  const Vector3d &pos = hit.position;
+	  double Mx = pos.x, My = pos.y, Mz = pos.z;
+	  double Rcdphi, Xr, Yr, Zr, Ur, Vr;
+	  g2lOuter(Mx,My,Mz,module,Rcdphi,Xr,Yr,Zr,Ur,Vr);
+	  printf("Evt #%5d module %2d vID 0x%08lx %.4f %.4f\n",
+		 evtNum,module,cellID&0xffffffff,Rcdphi,Zr);
+	}
+	*/
 	int jh = ih; vector<int> coalesced; int nCoaHs = coalescedHs.size();
 	if (0x1<<idet&stripMode) {
 	  while (++jh<nHits && samePMO(idet,ih,jh)) {
@@ -295,7 +304,8 @@ void recoEvents::fillHit(int simOrRec, int idet,
     hs->XYr[zone]->Fill(Xr,Yr);
   }
   else if (idet==1) { // Special Outer: fill Rcosphi, Ur, Vr
-    double Rcdphi, Xr, Yr, Ur, Vr; int zone; getReducedOuter(X,Y,Z,module,Rcdphi,Xr,Yr,Ur,Vr);
+    double Rcdphi, Xr, Yr, Zr, Ur, Vr;
+    g2lOuter(X,Y,Z,module,Rcdphi,Xr,Yr,Zr,Ur,Vr);
     hs->Rr->Fill(Rcdphi,div);
     hs->Ur->Fill(Ur,div); hs->Vr->Fill(Vr,div);
   }
@@ -346,11 +356,11 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     }
   }
   else if (idet==1) { // Outer specific
-    double Rcdphi,  Xr,  Yr,  Ur,  Vr;  getReducedOuter(X, Y, Z, module,Rcdphi, Xr, Yr, Ur, Vr);
-    double Rcdphis, Xrs, Yrs, Urs, Vrs; getReducedOuter(Xs,Ys,Zs,module,Rcdphis,Xrs,Yrs,Urs,Vrs);
-    if (doPrint)
-      printf("Rr,Rrs: %.2f,%.2f, Ur,Urs: %.2f,%.2f, Vr,Vrs: %.2f,%.2f\n",
-	     Rcdphi,Rcdphis,Ur,Urs,Vr,Vrs);
+    double Rcdphi,  Xr,  Yr,  Zr,  Ur,  Vr;  g2lOuter(X, Y, Z, module,Rcdphi, Xr, Yr, Zr, Ur, Vr);
+    double Rcdphis, Xrs, Yrs, Zrs, Urs, Vrs; g2lOuter(Xs,Ys,Zs,module,Rcdphis,Xrs,Yrs,Zrs,Urs,Vrs);
+    //if (doPrint)
+    //printf("Rr,Rrs: %.2f,%.2f, Ur,Urs: %.2f,%.2f, Vr,Vrs: %.2f,%.2f\n",
+    //	     Rcdphi,Rcdphis,Ur,Urs,Vr,Vrs);
     double dRcdphi = 1000*(Rcdphi-Rcdphis);
     rs.Rr->Fill(dRcdphi);
     double dUr = 1000*(Ur-Urs), dVr = 1000*(Vr-Vrs);
@@ -436,12 +446,14 @@ void recoEvents::l2gCyMBaL(double *lpos, int div, double *gpos)
   if (section>1) Zr *= -1;
   Z = Zr-sectionDZs[0][section];
 }
-void getReducedOuter(double X, double Y, double Z, unsigned int module,
-		     double &Rcdphi, double &Xr, double &Yr,
-		     double &Ur, double &Vr)
+void recoEvents::g2lOuter(double X, double Y, double Z, unsigned int module,
+			  double &Rcdphi, double &Xr, double &Yr, double &Zr,
+			  double &Ur, double &Vr,
+			  double *rot)
 {
   // Rotate to phi = 0
   int iphi = module>>1; double phic = iphi*TMath::Pi()/6;
+  if (rot) *rot = phic;
   //<constant name="MPGDOuterBarrelModule_zmin1"     value="164.5*cm"/>
   //<constant name="MPGDOuterBarrelModule_zmin2"     value="174.5*cm"/>
   double zmin1 = 1640.5, zmin2 = 1740.5;
@@ -454,7 +466,10 @@ void getReducedOuter(double X, double Y, double Z, unsigned int module,
   V *= r;
   Rcdphi = V(0); Xr = V(1); Yr = V(2);
   Vr = (Yr+Xr)/sqrt(2); Ur = (Yr-Xr)/sqrt(2);
-  
+  // Z: local is perpendicular to (Xr,Yr)=(Ur,Vr) plane
+  // => Rcdphi - distance to beam axis.
+  Zr = Rcdphi-radii[1][0];
+   
   /*
   printf(" 0x%02x %2d %6.1f,%6.1f,%4.1f %4.1f %6.1f,%6.1f,%4.1f\n",
 	 module,iphi,X,Y,atan2(Y,X)/TMath::Pi()*12,phic/TMath::Pi()*12,
@@ -643,6 +658,11 @@ bool recoEvents::extrapolate(int idet, int ih, int jh)
 	       jh,subVolJD,dfpth,hjt.pathLength,pathDfpth);
       ok = (continuation&0x5) && (continuation&0xa);
     }
+    else if (idet==1) {
+      double pathDepth, depth, pathDfpth, dfpth;
+      bool traversing = checkTraversing(idet,hit,pathDepth,depth);
+      bool traversjng = checkTraversing(idet,hjt,pathDfpth,dfpth); 
+    }
   }
   return ok;
 }
@@ -751,8 +771,9 @@ void recoEvents::extend(int idet, int ih, SimTrackerHitData &hext)
   }
   bool doExtend = true; int direction = +1;
   int subVolID = cID>>28&0xf; if (subVolID==0x3 || subVolID==0x4) {
-    // Determine pathDepth, i.e. path projected along cylinder's radius
+    // Determine pathDepth
     if (idet==0) {
+      // Cylinder: pathDepth is projected along cylinder's radius
       double pathDepth, Rr; doExtend = checkTraversing(idet,hit,pathDepth,Rr);
       if ((doDebug&0x100) && doExtend)
 	printf(" 0x%08lx,0x%08lx Traversing? %d: pathDepth %.3f Rr %.3f\n",
@@ -784,6 +805,13 @@ void recoEvents::extend(int idet, int ih, SimTrackerHitData &hext)
 		 cID&0xffffffff,cID>>32,doExtend,pathDepth,Rr,midPlane);
       }
       direction = pathDepth>0 ? +1 : -1;
+    }
+    else if (idet==1) {
+      // Cylinder: pathDepth is projected along cylinder's radius
+      double pathDepth, Rr; doExtend = checkTraversing(idet,hit,pathDepth,Rr);
+      if ((doDebug&0x100)) // && doExtend
+	printf(" 0x%08lx,0x%08lx Traversing? %d: pathDepth %.3f Zr %.3f %.3f\n",
+	       cID&0xffffffff,cID>>32,doExtend,pathDepth,Rr,hit.pathLength);
     }
     if (doExtend) {
       double gext[3]; doExtend = extendHit(idet,ih,direction,gext);
@@ -829,6 +857,22 @@ bool recoEvents::checkTraversing(int idet, SimTrackerHitData &hit,
     double Pxr = crot*Px+srot*Py, Pyr = -srot*Px+crot*Py;
     double cTheta = (Pxr*Xr+Pyr*Yr)/P/sqrt(Xr*Xr+Yr*Yr);
     pathDepth = hit.pathLength*cTheta; depth = Rr;
+    double thickness = radiatorThicknesses[idet];
+    traversing = fabs(fabs(pathDepth)-thickness)<.200; // Somewhat large 200 µm tolerance
+  }
+  else if (idet==1) {
+    double Rcdphi, Xr, Yr, Zr, Ur, Vr, rot;
+    g2lOuter(Mx,My,Mz,module,Rcdphi,Xr,Yr,Zr,Ur,Vr,&rot);
+    double crot = std::cos(rot), srot = std::sin(rot);
+    double Pxr = crot*Px+srot*Py, Pyr = -srot*Px+crot*Py;
+    //double cTheta = (Pxr*Xr+Pyr*Zr)/P/sqrt(Xr*Xr+Zr*Zr);
+    double cTheta = (Pxr*Zr)/P/sqrt(Zr*Zr);
+    pathDepth = hit.pathLength*cTheta; depth = Zr;
+    //#define DEBUG_PATHLENGTH
+#ifdef DEBUG_PATHLENGTH
+    printf("=== Evt #%5d %d %6.3f %6.3f %.3f\n",
+	   evtNum,subVolID,hit.pathLength,pathDepth,Rcdphi);
+#endif
     double thickness = radiatorThicknesses[idet];
     traversing = fabs(fabs(pathDepth)-thickness)<.200; // Somewhat large 200 µm tolerance
   }
@@ -936,7 +980,7 @@ void recoEvents::printHit(int idet,
 	   "",cellID&0xffffffff,cell,X,Y,Z,Rr,phir/pi);
   }
   else if (idet==1) {
-    double Rcdphi, Xr, Yr, Ur, Vr; getReducedOuter(X,Y,Z,module,Rcdphi,Xr,Yr,Ur,Vr);
+    double Rcdphi, Xr, Yr, Ur, Vr, Zr; g2lOuter(X,Y,Z,module,Rcdphi,Xr,Yr,Zr,Ur,Vr);
     printf("%10s 0x%08lx,0x%08x X,Y,Z %7.2f,%7.2f,%8.2f Rr %7.3f U,V %7.2f,%7.2f mm\n",
 	   "",cellID&0xffffffff,cell,X,Y,Z,Rcdphi,Ur,Vr);
   }
@@ -1045,8 +1089,8 @@ bool recoEvents::extendHit(int idet, int ih, int direction, double *gext)
     int section = div>>3; lmom[2] = section<2 ? +Pz : -Pz;
     // Limitations
     int staveType = section==1 || section==2 ? 0 : 1;
-    double endPhi = phiHWidths[0][staveType], startPhi = -endPhi;
-    double dZ = ZHWidths[0];
+    double endPhi = hWidths[0][staveType], startPhi = -endPhi;
+    double dZ = ZHLengths[0];
     // Target = extreme edge of counterpart SUBVOLUME.
     int pm = subVolID==3 ? +1 : -1;
     double rT = radii[0][staveType]+pm*volumeThicknesses[0]/2;
@@ -1069,7 +1113,7 @@ bool recoEvents::extendHit(int idet, int ih, int direction, double *gext)
       rMin = r0-volumeThicknesses[0]/2;
       rMax = r0-volumeThicknesses[0]/2+radiatorThicknesses[0];
       rMin /= 10; rMax /= 10;
-      double dZ = ZHWidths[0]/10;
+      double dZ = ZHLengths[0]/10;
       printf("double pars[5] = {%.5f,%.5f,%.5f,%.5f,%.5f};\n",
 	rMin,rMax,startPhi,endPhi,dZ);
       rMin = r0+volumeThicknesses[0]/2-radiatorThicknesses[0];
@@ -1186,19 +1230,20 @@ unsigned int cExtension(double const* lpos, double const* lmom, // Input subHit
   }
   return status;
 }
-void DrawHit(double *pars, double *lpos, double *lmom, double path, double *r2s = 0);
+void cDrawHit(double *pars, double *lpos, double *lmom, double path, double *r2s);
+void bDrawHit(double *pars, double *lpos, double *lmom, double path, double *r2s);
 void AddHit(double *lpos, double *lmom, double path);
 void recoEvents::DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
 			    bool addToPreExisting)
 {
   // ***** PARSE ARGs
   if (!fChain->GetEntry(jentry)) {
-    printf("** DrawHit: Invalid <jentry> arg. = %d\n",jentry);
+    printf("** DrawSimHit: Invalid <jentry> arg. = %d\n",jentry);
     return;
   }
   unsigned int pat = processedDetectors&detectorPattern;
   if (!pat) {
-    printf("** DrawHit: None of the processed detectors(=0x%x) in arg. <detectorPattern>(=0x%x)\n",
+    printf("** DrawSimHit: None of the processed detectors(=0x%x) in arg. <detectorPattern>(=0x%x)\n",
 	   processedDetectors,detectorPattern);
     return;
   }
@@ -1207,20 +1252,21 @@ void recoEvents::DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
     if (!(0x1<<idet&pat)) continue;
     int nHits = hits[idet]->size(); // #SimHits
     if (ih>=nHits) {
-      printf("** DrawHit: Invalid <ih>(=%d) arg., >= #SimHits[%d](=%d)\n",
+      printf("** DrawSimHit: Invalid <ih>(=%d) arg., >= #SimHits[%d](=%d)\n",
 	     ih,idet,nHits);
       return;
     }
     SimTrackerHitData &hit = hits[idet]->at(ih); unsigned long cID = hit.cellID;
+    // Globals
+    const Vector3d &pos = hit.position; double Mx = pos.x, My = pos.y, Mz = pos.z;
+    const Vector3f &mom = hit.momentum; double Px = mom.x, Py = mom.y, Pz = mom.z;
+    // Locals
+    double Xr, Yr, Zr, lpos[3];
     if (idet==0) {
-      // Globals
-      const Vector3d &pos = hit.position; double Mx = pos.x, My = pos.y, Mz = pos.z;
-      const Vector3f &mom = hit.momentum; double Px = mom.x, Py = mom.y, Pz = mom.z;
       // Globals -> Locals
-      double Xr, Yr, Zr;
       unsigned int module, div, strip; parseCellID(idet,cID,module,div,strip);
       double Rr, phir, rot; g2lCyMBaL(Mx,My,Mz,div,Xr,Yr,Zr,Rr,phir,0,&rot);
-      double lpos[3]; lpos[0] = Xr/10; lpos[1] = Yr/10; lpos[2] = Zr/10;
+      lpos[0] = Xr/10; lpos[1] = Yr/10; lpos[2] = Zr/10;
       double crot = std::cos(rot), srot = std::sin(rot);
       double Pxr = crot*Px+srot*Py, Pyr = -srot*Px+crot*Py;
       // Momentum: sections 3 and 4 are rotated by 180°.
@@ -1234,14 +1280,14 @@ void recoEvents::DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
       rMin = r0-volumeThicknesses[0]/2;
       rMax = r0-volumeThicknesses[0]/2+radiatorThicknesses[0];
       rMin /= 10; rMax /= 10;
-      double dZ = ZHWidths[0]/10;
-      double endPhi = phiHWidths[0][staveType], startPhi = -endPhi;
+      double dZ = ZHLengths[0]/10;
+      double endPhi = hWidths[0][staveType], startPhi = -endPhi;
       double pars[5] = {rMin,rMax,startPhi,endPhi,dZ};
       rMin = r0+volumeThicknesses[0]/2-radiatorThicknesses[0];
       rMax = r0+volumeThicknesses[0]/2;
       rMin /= 10; rMax /= 10;
       double r2s[2] = {rMin,rMax};
-
+      
       printf("double lpos[3] = {%.6f,%.6f,%.6f};\n",
 	     lpos[0]/10,lpos[1]/10,lpos[2]/10);
       printf("double lmom[3] = {%.6f,%.6f,%.6f};\n",lmom[0],lmom[1],lmom[2]);
@@ -1249,16 +1295,55 @@ void recoEvents::DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
       printf("double pars[5] = {%.5f,%.5f,%.5f,%.5f,%.5f};\n",
 	rMin,rMax,startPhi,endPhi,dZ);
       printf("double r2s[2] = {%.5f,%.5f};\n",r2s[0],r2s[1]);
-      
+
+      // DrawHit
+      if (addToPreExisting) AddHit(       lpos,lmom,path);
+      else                  cDrawHit(pars,lpos,lmom,path,r2s);
+    }
+    else if (idet==1) {
+      // Globals -> Locals
+      unsigned int module, div, strip; parseCellID(idet,cID,module,div,strip);
+      double Rcdphi, Ur, Vr, rot; g2lOuter(Mx,My,Mz,module,Rcdphi,Xr,Yr,Zr,Ur,Vr,&rot);
+      lpos[0] = Zr/10; lpos[1] = Xr/10; lpos[2] = Yr/10;
+      double crot = std::cos(rot), srot = std::sin(rot);
+      double Pxr = crot*Px+srot*Py, Pyr = -srot*Px+crot*Py;
+      // Momentum: sections 3 and 4 are rotated by 180°.
+      double lmom[3]; lmom[0] = Pxr; lmom[1] = Pyr; lmom[2] = Pz;
+      // Pathlength
+      double path = hit.pathLength/10;
+      // Parameters
+      double r0 = 0, rMin, rMax;
+      rMin = r0-volumeThicknesses[1]/2;
+      rMax = r0-volumeThicknesses[1]/2+radiatorThicknesses[1];
+      rMin /= 10; rMax /= 10;
+      double dZ = ZHLengths[0]/10;
+      double endX = hWidths[1][0]/10, startX = -endX;
+      double pars[5] = {rMin,rMax,startX,endX,dZ};
+      rMin = r0+volumeThicknesses[1]/2-radiatorThicknesses[1];
+      rMax = r0+volumeThicknesses[1]/2;
+      rMin /= 10; rMax /= 10;
+      double r2s[2] = {rMin,rMax};
+
+      printf("gpos %.6f,%.6f,%.6f\n",Mx/10,My/10,Mz/10);      
+      printf("gmom %.6f,%.6f,%.6f\n",Px,Py,Pz);
+
+      printf("double lpos[3] = {%.6f,%.6f,%.6f};\n",
+	     lpos[0]/10,lpos[1]/10,lpos[2]/10);
+      printf("double lmom[3] = {%.6f,%.6f,%.6f};\n",lmom[0],lmom[1],lmom[2]);
+      printf("double path = %.6f;\n",hit.pathLength/10);
+      printf("double pars[5] = {%.5f,%.5f,%.5f,%.5f,%.5f};\n",
+	rMin,rMax,startX,endX,dZ);
+      printf("double r2s[2] = {%.5f,%.5f};\n",r2s[0],r2s[1]);
+
       // DrawHit
       if (addToPreExisting) AddHit(      lpos,lmom,path);
-      else                  DrawHit(pars,lpos,lmom,path,r2s);
+      else                  bDrawHit(pars,lpos,lmom,path,r2s);
     }
   }
 }
 #include "TEllipse.h"
 #include "TLine.h"
-void DrawHit(double *pars, double *lpos, double *lmom, double path, double *r2s)
+void cDrawHit(double *pars, double *lpos, double *lmom, double path, double *r2s)
 {
   double rMin = pars[0], rMax = pars[1], dZ = pars[4]; 
   double startPhi = pars[2], endPhi = pars[3];
@@ -1322,6 +1407,89 @@ void DrawHit(double *pars, double *lpos, double *lmom, double path, double *r2s)
   printf("x,yLow/Up %.2f,%.2f %.2f,%.2f path/norm => at %.2f,%.2f,%f\n",
 	 xLow,xUp,yLow,yUp,path,norm,at);
 #endif
+  for (int s = -1; s<=+1; s += 2) {
+    double Nx = Mx+s*at*Px, Ny = My+s*at*Py;
+    tp->DrawLine(Mx,My,Nx,Ny);
+    tp->DrawLine(Nx-w,Ny,Nx+w,Ny); tp->DrawLine(Nx,Ny-w,Nx,Ny+w);
+    if (Nx-w<xMn) xMn = Nx-w; if (Ny-w<yMn) yMn = Ny-w;
+    if (Nx+w>xMx) xMx = Nx+w; if (Ny+w>yMx) yMx = Ny+w;
+#ifdef DEBUG_DRAWHIT
+    printf("%d: Mx,y %.2f,%.2f/%.2fx,yMn/Mx %.2f,%.2f %.2f,%.2f\n",
+	   s,Mx,My,w,xMn,xMx,yMn,yMx);
+#endif
+  }
+
+  // Re-draw h2
+  // (This givess interactive access to its TAxis objects, otherwise hidden by
+  // the TEllipse.)
+  //  h2->Draw("same");
+
+  // Range
+  //dx = (xMx-xMn)/4; xMn -= dx; xMx += dx;
+  //dy = (yMx-yMn)/4; yMn -= dy; yMx += dy;
+  dx = (xMx-xMn)/1; xMn -= dx; xMx += dx;
+  dy = (yMx-yMn)/2; yMn -= dy; yMx += dy;
+  // If pathLength short, range may be too narrow: expand it, that it's >> 0.3cm.
+  if (xMx-xMn<.3) {
+    double xMean = (xMn+xMx)/2; xMn = xMean-.4; xMx = xMean+.4;
+  }
+  if (yMx-yMn<.3) {
+    double yMean = (yMn+yMx)/2; yMn = yMean-.4; yMx = yMean+.4;
+  }
+  int bxMn = int(1+nBinsX*(xMn-xLow)/(xUp-xLow)+.5), bxMx = int(1+nBinsX*(xMx-xLow)/(xUp-xLow)+.5);
+  int byMn = int(1+nBinsY*(yMn-yLow)/(yUp-yLow)+.5), byMx = int(1+nBinsY*(yMx-yLow)/(yUp-yLow)+.5);
+  printf("%.2f,%.2f  %.2f,%.2f  [%d,%d] [%d,%d]\n",
+	 xMn,xMx,yMn,yMx,bxMn,bxMx,byMn,byMx);
+  ax->SetRange(bxMn,bxMx);
+  ay->SetRange(byMn,byMx);
+  //ax->Draw(); ay->Draw();
+  
+  gPad->Modified(); gPad->Update();
+}
+void bDrawHit(double *pars, double *lpos, double *lmom, double path, double *r2s)
+{
+  double rMin = pars[0], rMax = pars[1], dZ = pars[4];
+  double startX = pars[2], endX = pars[3];
+  double XMn = startX, XMx = endX;
+  double rMi2 = r2s[0],  rMa2 = r2s[1];
+
+  TCanvas *c = new TCanvas("bEvt");
+
+  // TH2
+  double xLow = rMin, xUp = rMa2, dx = (xUp-xLow)/10;
+  xLow -= dx; xUp += dx;
+  double yUp  = XMx, yLow = XMn,  dy = (yUp-yLow)/10; 
+  yLow -= dy; yUp += dy;
+  TH2D *h2 = new TH2D("hEvt",";Z (cm)  ;X (cm)  ",2000,xLow,xUp,2000,yLow,yUp);
+  h2->Draw();
+  h2->SetStats(0); h2->SetFillColorAlpha(0,0); h2->SetLineColor(0);
+  TAxis *ax = h2->GetXaxis(), *ay = h2->GetYaxis();
+  ax->SetNdivisions(505); ay->SetNdivisions(505);
+  ay->SetTitleOffset(1.3);
+  int nBinsX = h2->GetNbinsX(), nBinsY = h2->GetNbinsY();
+
+  // Draw boxes
+  const double ringWidth = 2;
+  TLine *box1 = new TLine;
+  box1->SetLineColor(2); box1->SetLineWidth(ringWidth);
+  box1->DrawLine(rMin,XMn,rMin,XMx); box1->DrawLine(rMax,XMn,rMax,XMx);
+  TLine *box2 = new TLine;
+  box2->SetLineColor(4); box2->SetLineWidth(ringWidth);
+  box2->DrawLine(rMi2,XMn,rMi2,XMx); box2->DrawLine(rMa2,XMn,rMa2,XMx);
+
+  // Draw <lpos>
+  double w = .05;
+  double Mx = lpos[0], My = lpos[1];
+  int orange = kOrange+1, vert = kGreen+2, col = Mx<rMax ? vert : orange;
+  TLine *tl = new TLine; tl->SetLineColor(orange);
+  tl->DrawLine(Mx-w,My,Mx+w,My); tl->DrawLine(Mx,My-w,Mx,My+w);
+
+  // Draw <lpos>+/-path/2
+  // Extrema
+  TLine *tp = new TLine; tp->SetLineColor(orange);
+  double xMn = xUp, xMx = xLow, yMn = yUp, yMx = yLow;
+  double Px = lmom[0], Py = lmom[1], Pz = lmom[2];
+  double norm = sqrt(Px*Px+Py*Py+Pz*Pz), at = path/2/norm;
   for (int s = -1; s<=+1; s += 2) {
     double Nx = Mx+s*at*Px, Ny = My+s*at*Py;
     tp->DrawLine(Mx,My,Nx,Ny);

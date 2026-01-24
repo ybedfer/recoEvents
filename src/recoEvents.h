@@ -151,8 +151,8 @@ public :
    vector<double> radii[N_DETs];
    int nSections[N_DETs];
    vector<double> sectionDZs[N_DETs]; // Transform global -> local
-   vector<double> phiHWidths[N_DETs]; // HalfWidths
-   double ZHWidths[N_DETs];           // HalfWidths
+   vector<double> hWidths[N_DETs];    // HalfWidths
+   double ZHLengths[N_DETs];          // HalfLengths
 
    // ********** HISTOS
    // ***** SELECTION
@@ -181,6 +181,10 @@ public :
 		  int *zone = 0, // Whether in peak, L/R edge, else
 		  double *rot = 0);
    void l2gCyMBaL(double *lpos, int div, double *gpos);
+   void g2lOuter(double X, double Y, double Z, unsigned int div,
+		 double &Rcphi, double &Xr, double &Yr, double &Zr,
+		 double &Ur, double &Vr,
+		 double *rot = 0);
    bool samePMO(int idet, int ih, int jh);
    bool extrapolate(int idet, int ih, int jh);
    bool coalesce(int idet, vector<int> coalesced, SimTrackerHitData &hext);
@@ -248,7 +252,9 @@ public :
    virtual void     Init(TTree *tree);
    virtual Bool_t   Notify();
    virtual void     Show(Long64_t entry = -1);
-
+  
+   void initGeometry(unsigned int hasStrips);
+  
    ClassDef(recoEvents,1); // Must be the last item before the closing '};'
 };
 
@@ -274,30 +280,8 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
   stripMode = hasStrips;
   requireTraversing = false; // Default = coalesce all extrapolate-compatible hits
   // ***** GEOMETRY
-  for (int idet = 0; idet<N_DETs; idet++) {
-    volumeThicknesses[idet]=radiatorThicknesses[idet] = 0;
-  }
-  if (!hasStrips) {
-    nSensitiveSurfaces = 1;
-    volumeThicknesses[0] =   3; volumeThicknesses[2] =   3;
-    radiatorThicknesses[0] = 0; radiatorThicknesses[2] = 0;
-  }
-  else {
-    nSensitiveSurfaces = 5;
-    const double volThickness = 3;           // 3mm thickness
-    volumeThicknesses[0]=volumeThicknesses[1]     = volThickness;
-    const double radThickness = (3-3*.01)/2; // 3mm thickness-3*HELPER SUBVOLUMES
-    radiatorThicknesses[0]=radiatorThicknesses[1] = radThickness;
-    // CyMBaL = 2 radii, 4 sections
-    radii[0].push_back(556.755); radii[0].push_back(578.755);
-    const int nSs = 4; nSections[0] = nSs;
-    double dZs[nSs] = {670.0,103.5,-528.5,-1095.0}; // mm
-    for (int section = 0; section<nSs; section++)
-      sectionDZs[0].push_back(dZs[section]);
-    phiHWidths[0].push_back(0.41441); phiHWidths[0].push_back(0.39861);
-    ZHWidths[0] = 305;
-  }
-
+  initGeometry(hasStrips);
+  // ***** OBJECT ID
   iObjCreated = nObjCreated++;
   evtToDebug = -1;
   Init(tree);
@@ -463,6 +447,37 @@ void recoEvents::Init(TTree *tree)
      BookHistos(recHs[1],"r1");
      dSave->cd();
    }
+}
+// ********** GEOMETRY
+void recoEvents::initGeometry(unsigned int hasStrips)
+{
+  for (int idet = 0; idet<N_DETs; idet++) {
+    volumeThicknesses[idet]=radiatorThicknesses[idet] = 0;
+  }
+  if (!hasStrips) {
+    nSensitiveSurfaces = 1;
+    volumeThicknesses[0] =   3; volumeThicknesses[2] =   3;
+    radiatorThicknesses[0] = 0; radiatorThicknesses[2] = 0;
+  }
+  else {
+    nSensitiveSurfaces = 5;
+    const double volThickness = 3;           // 3mm thickness
+    volumeThicknesses[0]=volumeThicknesses[1]     = volThickness;
+    const double radThickness = (3-3*.01)/2; // 3mm thickness-3*HELPER SUBVOLUMES
+    radiatorThicknesses[0]=radiatorThicknesses[1] = radThickness;
+    // CyMBaL = 2 radii, 4 sections
+    radii[0].push_back(556.755); radii[0].push_back(578.755);
+    const int nSs = 4; nSections[0] = nSs;
+    double dZs[nSs] = {670.0,103.5,-528.5,-1095.0}; // mm
+    for (int section = 0; section<nSs; section++)
+      sectionDZs[0].push_back(dZs[section]);
+    hWidths[0].push_back(0.41441); hWidths[0].push_back(0.39861);
+    ZHLengths[0] = 305;
+    // Outer
+    radii[1].push_back(737.4650);
+    hWidths[1].push_back(165);
+    ZHLengths[1] = 840;
+  }
 }
 // *************** HISTOS
 void recoEvents::BookHistos(Histos *Hs, const char* tag)
