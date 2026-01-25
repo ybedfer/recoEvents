@@ -29,8 +29,8 @@ ana.Loop();                 // For debugging: "Loop(<nEvents>,<firstEvent>)"
 ana.DrawphithZR(0,0xf,true); // Draw SimHits, w/ if true, colour highlighting of module type.
 ana.DrawphithZR(1,0xf,true); // Draw RecHits (1: 1st coord, 2: 2nd coord), w/ if true, colour highlighting of module type.
 ana.DrawResiduals(1,0x1);    // Draw residuals RecHit-SimHit for phi (iRec=1) of CyMBaL (=0x1)
-ana.DrawSimHit(3328,0x1,0);  // Draw 0th SimHit of evt #3328
-ana.DrawSimHit(3328,0x1,4,1);// Superimpose 4th SimHit of evt #3328
+ana.DrawSimHit(3328,0x1,0);  // Draw 0th SimHit of detector 0x1 for evt #3328
+ana.DrawSimHit(3328,0x1,4,1);// Superimpose 4th SimHit
 // Direct access to histograms
 ana.recHs[0][0].ZR[0]; h2->SetTitle("CyMBaL Rec"); h2->Draw(); SetPaveText(h2,0);
 // ***** SEVERAL recoEvents OBJECTS

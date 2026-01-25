@@ -343,14 +343,14 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     if (doPrint) {
       if (strip==1 && fabs(dZ)>580 || strip==0 && fabs(dphir)>1) {
 	//if (strip==1 && fabs(dZ)>0) {
+	printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f %7.3f mm %7.3fπ\n",
+	       evtNum,cellID&0xffffffff,cellID>>32,X,Y,Z,Rr,phir/TMath::Pi());
 	char text[] ="dφ 1.810 mrd";
 	//           "dZ 1000 µm";
 	size_t lt = strlen(text)+1;
 	if (strip==1) snprintf(text,lt,"dZ %4.0f µm",dZ);
 	else          snprintf(text,lt,"dφ %5.3f mrd",dphir);
-	printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f %7.3f mm %7.3fπ\n",
-	       evtNum,cellID&0xffffffff,cellID>>32,X,Y,Z,Rr,phir/TMath::Pi());
-	printf("%16s %12s %7.2f,%7.2f,%8.2f %7.3f mm %7.3fπ  %s\n",
+	printf("%16s %12s %7.2f,%7.2f,%8.2f R,φ %7.3f mm %7.3fπ  %s\n",
 	       "SimHit","",Xs,Ys,Zs,Rrs,phirs/TMath::Pi(),text);
       }
     }
@@ -368,12 +368,12 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     if (doPrint) {
       if (strip==0 && fabs(dUr)>580 || strip==1 && fabs(dVr)>580) {
       //if (strip==1 && fabs(dU)>0) {
+	printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f U,V %8.3f,%8.3f mm\n",
+	       evtNum,cellID&0xffffffff,cellID>>32,X,Y,Z,Ur,Vr);
 	char text[] ="dU 1000 µm"; size_t lt = strlen(text)+1;
 	if (strip==1) snprintf(text,lt,"dV %4.0f µm",dVr);
 	else          snprintf(text,lt,"dU %4.0f µm",dUr);
-	printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f %7.3f %7.3f mm\n",
-	       evtNum,cellID&0xffffffff,cellID>>32,X,Y,Z,Ur,Vr);
-	printf("%16s %12s %7.2f,%7.2f,%8.2f %7.3f %7.3f mm %s\n",
+	printf("%16s %12s %7.2f,%7.2f,%8.2f U,V %8.3f %8.3f mm %s\n",
 	       "SimHit","",Xrs,Yrs,Zs,Urs,Vrs,text);
       }
     }
@@ -571,6 +571,10 @@ bool recoEvents::samePMO(int idet, int ih, int jh) {
   }
   return mcJdx==mcIdx && modvle==module && qualjty==quality && vJD!=vID;
 }
+  //#define DEBUG_EXTRAP
+#ifdef DEBUG_EXTRAP
+#include <TGraph.h>
+#endif
 bool recoEvents::extrapolate(int idet, int ih, int jh)
 {
   // - Extrapolate hits along their momentum by half-distance.
@@ -610,7 +614,41 @@ bool recoEvents::extrapolate(int idet, int ih, int jh)
   double u = dist/2/P, Ex = Mx+u*Px, Ey = My+u*Py, Ez = Mz+u*Pz;
   double v = dist/2/Q, Fx = Nx-v*Qx, Fy = Ny-v*Qy, Fz = Nz-v*Qz;
   double dext = sqrt((Ex-Fx)*(Ex-Fx)+(Ey-Fy)*(Ey-Fy)+(Ez-Fz)*(Ez-Fz));
-  bool ok = dext<.025;
+  // Cut is made depending upon P...
+  double pMeV = P*1000, dMx = 2*(.05+1e-5*exp(-(pMeV-25)/2.6));
+  // and relaxed when one of the participant is a thin SUBVOLUME
+  int subVolID = hit.cellID>>28&0xf, subVolJD = hjt.cellID>>28&0xf;
+  if (subVolID<3 || subVolJD<3) dMx *= 1.5;
+  bool ok = dext<dMx; // 25 µm
+#ifdef DEBUG_EXTRAP
+  // Try and determine appropriate parameters for the P dependence of the Cut
+  if (dext>.005 && dext<1.00) {
+    double pathDepth, depth, pathDfpth, dfpth;
+    bool traversing = checkTraversing(idet,hit,pathDepth,depth);
+    bool traversjng = checkTraversing(idet,hjt,pathDfpth,dfpth); 
+    if (traversing && traversjng) {
+      double p = P*1000;
+      int ip = P*1000 < 1 ? int(p*5) : 5+int(p/2); ip -= 1;
+      static double sps[10], sds[10]; static int first = 1, s1s[10], nOKs[10];
+      if (ip<0) ip = 0; if (ip>=10) ip = 9;
+      if (first) {
+	first = 0; for (int i = 0; i<10; i++) { sps[i]=sds[i] = 0; s1s[i]=nOKs[i] = 0; }
+      }
+      sps[ip] += p; sds[ip] += dext; s1s[ip]++; if (ok) nOKs[ip]++;
+      printf("==== #%5d,%d,%02d,%02d dext = %.3f/%.3f %s P = %6.3f MeV %d %6.3f MeV %.3f %3d  %.2f%%\n",
+	     evtNum,idet,ih,jh,dext,dMx,dext<dMx?"OK":"  ",P*1000,ip,sps[ip]/s1s[ip],sds[ip]/s1s[ip],s1s[ip],100.*nOKs[ip]/s1s[ip]);
+      if (evtNum==15991) {
+	TGraph *g = new TGraph(); g->SetName("gdP");
+	for (int ip = 0; ip<10; ip++) {
+	  printf(" %d P = %6.3f MeV d %.3f %3d %3d %.2f%%\n",
+		 ip,sps[ip]/s1s[ip],sds[ip]/s1s[ip],s1s[ip],nOKs[ip],100.*nOKs[ip]/s1s[ip]);
+	  g->SetPoint(ip,sps[ip]/s1s[ip],sds[ip]/s1s[ip]);
+	}
+	g->Draw("AL");
+      }
+    }
+  }
+#endif
   // Debugging
   if ((verbose&0x100<<idet) || evtNum==evtToDebug) doDebug |= 0x100;
   if  (doDebug&0x100) {
@@ -636,7 +674,6 @@ bool recoEvents::extrapolate(int idet, int ih, int jh)
       double pathDepth, depth, pathDfpth, dfpth;
       bool traversing = checkTraversing(idet,hit,pathDepth,depth);
       bool traversjng = checkTraversing(idet,hjt,pathDfpth,dfpth); 
-      int subVolID = hit.cellID>>28&0xf, subVolJD = hjt.cellID>>28&0xf;
       unsigned int continuation = 0;
       if (traversing) continuation |= 0x1;
       if (traversjng) continuation |= 0x2;
@@ -858,7 +895,7 @@ bool recoEvents::checkTraversing(int idet, SimTrackerHitData &hit,
     double cTheta = (Pxr*Xr+Pyr*Yr)/P/sqrt(Xr*Xr+Yr*Yr);
     pathDepth = hit.pathLength*cTheta; depth = Rr;
     double thickness = radiatorThicknesses[idet];
-    traversing = fabs(fabs(pathDepth)-thickness)<.200; // Somewhat large 200 µm tolerance
+    traversing = fabs(fabs(pathDepth)-thickness)<.075; // Somewhat large 75 µm tolerance
   }
   else if (idet==1) {
     double Rcdphi, Xr, Yr, Zr, Ur, Vr, rot;
@@ -870,11 +907,11 @@ bool recoEvents::checkTraversing(int idet, SimTrackerHitData &hit,
     pathDepth = hit.pathLength*cTheta; depth = Zr;
     //#define DEBUG_PATHLENGTH
 #ifdef DEBUG_PATHLENGTH
-    printf("=== Evt #%5d %d %6.3f %6.3f %.3f\n",
-	   evtNum,subVolID,hit.pathLength,pathDepth,Rcdphi);
+    printf("=== Evt #%5d %d %6.3f %6.3f %.3f %.2f\n",
+	   evtNum,subVolID,hit.pathLength,pathDepth,Rcdphi,P);
 #endif
     double thickness = radiatorThicknesses[idet];
-    traversing = fabs(fabs(pathDepth)-thickness)<.200; // Somewhat large 200 µm tolerance
+    traversing = fabs(fabs(pathDepth)-thickness)<.075; // Somewhat large 75 µm tolerance
   }
   return traversing;
 }
