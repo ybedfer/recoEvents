@@ -87,18 +87,6 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	// ********** LOOP ON sim HITS: COALESCING AND EXTENDING
 	// -> "coalescedHs"
 	SimTrackerHitData &hit = hits[idet]->at(ih);
-	/*
-	if ((hit.cellID&0xff)==0x40 && (hit.cellID>>28&0xf)==0x0) {
-	  unsigned long cellID = hit.cellID;
-	  int module = cellID>>12&0xfff;
-	  const Vector3d &pos = hit.position;
-	  double Mx = pos.x, My = pos.y, Mz = pos.z;
-	  double Rcdphi, Xr, Yr, Zr, Ur, Vr;
-	  g2lOuter(Mx,My,Mz,module,Rcdphi,Xr,Yr,Zr,Ur,Vr);
-	  printf("Evt #%5d module %2d vID 0x%08lx %.4f %.4f\n",
-		 evtNum,module,cellID&0xffffffff,Rcdphi,Zr);
-	}
-	*/
 	int jh = ih; vector<int> coalesced; int nCoaHs = coalescedHs.size();
 	if (0x1<<idet&stripMode) {
 	  while (++jh<nHits && samePMO(idet,ih,jh)) {
@@ -297,17 +285,18 @@ void recoEvents::fillHit(int simOrRec, int idet,
   hs->XY->Fill(X,Y); hs->ZR->Fill(Z,R);
 
   if      (idet==0) { // Special CyMBaL: fill reduced Radius
-    double Xr, Yr, Zr, Rr, phir; int zone;
-    g2lCyMBaL(X,Y,Z,div,Xr,Yr,Zr,Rr,phir,&zone);
+    double Xr, Yr, Zr, Rr, phir;
+    g2lCyMBaL(X,Y,Z,div,Xr,Yr,Zr,Rr,phir);
     hs->phir->Fill(phir,div);
     hs->Rr->Fill(Rr,div);
-    hs->XYr[zone]->Fill(Xr,Yr);
+    hs->xyr->Fill(Rr*phir,Zr);
   }
   else if (idet==1) { // Special Outer: fill Rcosphi, Ur, Vr
     double Rcdphi, Xr, Yr, Zr, Ur, Vr;
     g2lOuter(X,Y,Z,module,Rcdphi,Xr,Yr,Zr,Ur,Vr);
     hs->Rr->Fill(Rcdphi,div);
     hs->Ur->Fill(Ur,div); hs->Vr->Fill(Vr,div);
+    hs->xyr->Fill(Xr,Yr);
   }
 }
 void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim, unsigned long cellID)
@@ -341,7 +330,7 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     double dRr = 1000*(Rr-Rrs), dphir = 1000*(phir-phirs);
     rs.Rr->Fill(dRr); rs.phir->Fill(dphir);
     if (doPrint) {
-      if (strip==1 && fabs(dZ)>580 || strip==0 && fabs(dphir)>1) {
+      if (strip==1 && fabs(dZ)>480 || strip==0 && fabs(dphir)>1) {
 	//if (strip==1 && fabs(dZ)>0) {
 	printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f %7.3f mm %7.3fπ\n",
 	       evtNum,cellID&0xffffffff,cellID>>32,X,Y,Z,Rr,phir/TMath::Pi());
@@ -365,6 +354,7 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     rs.Rr->Fill(dRcdphi);
     double dUr = 1000*(Ur-Urs), dVr = 1000*(Vr-Vrs);
     rs.Ur->Fill(dUr); rs.Vr->Fill(dVr);
+    rs.xyr->Fill(Xrs,Yrs,strip?dUr:dVr);
     if (doPrint) {
       if (strip==0 && fabs(dUr)>580 || strip==1 && fabs(dVr)>580) {
       //if (strip==1 && fabs(dU)>0) {
@@ -382,15 +372,12 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
 }
 void recoEvents::g2lCyMBaL(double X,   double Y,   double Z, unsigned int div,
 			   double &Xr, double &Yr, double &Zr,
-			   double &Rr, double &phir,
-			   int *zone, // Whether in peak, L/R edge, else
-			   double *rot)   // Rotation angle
+			   double &Rr, double &phir)
 {
   // Transform to centre of curvature of cylindrical tiles
   // and rotate to phi = 0
   int section = div>>3;
   int iphi = div%8, jphi = iphi%2; double phic = iphi*TMath::Pi()/4;
-  if (rot) *rot = phic;
   //<constant name="MMRadial_offset"                        value="1.0*cm"/>
   double offset = 10; // mm
   double rc = (2*jphi-1)*offset/2;    // ...flip sign of offset
@@ -405,24 +392,15 @@ void recoEvents::g2lCyMBaL(double X,   double Y,   double Z, unsigned int div,
   Xr = V(0); Yr = V(1); phir = atan2(Yr,Xr);
   // Zr
   Zr = Z+sectionDZs[0][section]; if (section>1) Zr *= -1;
-  if (zone) {
-    // *****zone: Whether in peak, L/R edge, else
-    // bin low up 
-    // Inner: peak = 344 556.748 556.797
-    //        low  = 313 555.234 555.283
-    //        up   = 374 558.213 558.262
-    // Outer: peak = 794 578.721 578.770
-    //        low  = 763 577.207 577.256
-    //        up   = 825 580.234 580.283
-    const double cls[2] = {556.748,578.721}, cus[2] = {556.797,578.770};
-    const double lls[2] = {555.234,577.207}, lus[2] = {555.283,577.256};
-    const double uls[2] = {558.213,580.234}, uus[2] = {558.262,580.283};
-    int io = (1<=section && section<=2)?0:1;
-    if      (cls[io]<Rr && Rr<cus[io]) *zone = 0;
-    else if (lls[io]<Rr && Rr<lus[io]) *zone = 1;
-    else if (uls[io]<Rr && Rr<uus[io]) *zone = 2;
-    else                               *zone = 3;
-  }
+}
+void recoEvents::g2lCyMBaL(double Px, double Py, double Pz, unsigned int div,
+			   double *lmom)
+{
+  int section = div>>3;
+  int iphi = div%8, jphi = iphi%2; double phic = iphi*TMath::Pi()/4;
+  double crot = std::cos(phic), srot = std::sin(phic);
+  lmom[0] = crot*Px+srot*Py; lmom[1] = -srot*Px+crot*Py;
+  lmom[2] = section<2 ? +Pz : -Pz;
 }
 void recoEvents::l2gCyMBaL(double *lpos, int div, double *gpos)
 {
@@ -456,25 +434,31 @@ void recoEvents::g2lOuter(double X, double Y, double Z, unsigned int module,
   if (rot) *rot = phic;
   //<constant name="MPGDOuterBarrelModule_zmin1"     value="164.5*cm"/>
   //<constant name="MPGDOuterBarrelModule_zmin2"     value="174.5*cm"/>
-  double zmin1 = 1640.5, zmin2 = 1740.5;
-  double modL = (zmin1+zmin2)/2, z0 = (zmin2-zmin1)/2;
-  double dZ = (module&0x1)?z0+modL/2:z0-modL/2; Z -= dZ;
   TVector3 V(X,Y,Z);
   TRotation r;
   r.SetXAxis(TVector3(cos(-phic),sin(-phic),0));
   r.SetYAxis(TVector3(-sin(-phic),cos(-phic),0));
   V *= r;
   Rcdphi = V(0); Xr = V(1); Yr = V(2);
+  int section = module%2;
+  if (section==0) { Xr *= -1; Yr *= -1; }
+  
   Vr = (Yr+Xr)/sqrt(2); Ur = (Yr-Xr)/sqrt(2);
-  // Z: local is perpendicular to (Xr,Yr)=(Ur,Vr) plane
+  // Local Z is perpendicular to (Xr,Yr)=(Ur,Vr) plane
   // => Rcdphi - distance to beam axis.
   Zr = Rcdphi-radii[1][0];
-   
-  /*
-  printf(" 0x%02x %2d %6.1f,%6.1f,%4.1f %4.1f %6.1f,%6.1f,%4.1f\n",
-	 module,iphi,X,Y,atan2(Y,X)/TMath::Pi()*12,phic/TMath::Pi()*12,
-	 V(0),V(1),atan2(V(1),V(0)/TMath::Pi()*12));
-  */
+  // Local Y is global Z, w/ a shift depending upon section = module%3
+  Yr -= sectionDZs[1][section];
+}
+void recoEvents::g2lOuter(double Px, double Py, double Pz, unsigned int module,
+			  double *lmom)
+{
+  // Rotate to phi = 0
+  int iphi = module>>1; double phic = iphi*TMath::Pi()/6;
+  double crot = std::cos(phic), srot = std::sin(phic);
+  double Pxr = crot*Px+srot*Py, Pyr = -srot*Px+crot*Py;
+  if (module%2==0) { Pz *= -1; Pyr *= -1; }
+  lmom[0] = Pyr; lmom[1] = Pz; lmom[2] = Pxr;
 }
 void recoEvents::parseCellID(int idet, unsigned long ID,
 			    unsigned int &module, unsigned int &div,
@@ -888,28 +872,22 @@ bool recoEvents::checkTraversing(int idet, SimTrackerHitData &hit,
   unsigned int module, div, strip; parseCellID(idet,hit.cellID,module,div,strip);
   int subVolID = hit.cellID>>28&0xf;
   if (idet==0  && (subVolID==0x3 || subVolID==0x4)) {
-    double Xr, Yr, Zr, Rr, phir, rot;
-    g2lCyMBaL(Mx,My,Mz,div,Xr,Yr,Zr,Rr,phir,0,&rot);
-    double crot = std::cos(rot), srot = std::sin(rot);
-    double Pxr = crot*Px+srot*Py, Pyr = -srot*Px+crot*Py;
+    double Xr, Yr, Zr, Rr, phir;
+    g2lCyMBaL(Mx,My,Mz,div,Xr,Yr,Zr,Rr,phir);
+    double lmom[3]; g2lCyMBaL(Px,Py,Pz,div,lmom);
+    double Pxr = lmom[0], Pyr = lmom[1];
     double cTheta = (Pxr*Xr+Pyr*Yr)/P/sqrt(Xr*Xr+Yr*Yr);
     pathDepth = hit.pathLength*cTheta; depth = Rr;
     double thickness = radiatorThicknesses[idet];
     traversing = fabs(fabs(pathDepth)-thickness)<.075; // Somewhat large 75 µm tolerance
   }
   else if (idet==1) {
-    double Rcdphi, Xr, Yr, Zr, Ur, Vr, rot;
-    g2lOuter(Mx,My,Mz,module,Rcdphi,Xr,Yr,Zr,Ur,Vr,&rot);
-    double crot = std::cos(rot), srot = std::sin(rot);
-    double Pxr = crot*Px+srot*Py, Pyr = -srot*Px+crot*Py;
-    //double cTheta = (Pxr*Xr+Pyr*Zr)/P/sqrt(Xr*Xr+Zr*Zr);
-    double cTheta = (Pxr*Zr)/P/sqrt(Zr*Zr);
+    double Rcdphi, Xr, Yr, Zr, Ur, Vr;
+    g2lOuter(Mx,My,Mz,module,Rcdphi,Xr,Yr,Zr,Ur,Vr);
+    double lmom[3]; g2lOuter(Px,Py,Pz,module,lmom);
+    double Pxr = lmom[2];
+    double cTheta = Pxr*abs(Zr)/P/sqrt(Zr*Zr);
     pathDepth = hit.pathLength*cTheta; depth = Zr;
-    //#define DEBUG_PATHLENGTH
-#ifdef DEBUG_PATHLENGTH
-    printf("=== Evt #%5d %d %6.3f %6.3f %.3f %.2f\n",
-	   evtNum,subVolID,hit.pathLength,pathDepth,Rcdphi,P);
-#endif
     double thickness = radiatorThicknesses[idet];
     traversing = fabs(fabs(pathDepth)-thickness)<.075; // Somewhat large 75 µm tolerance
   }
@@ -1118,14 +1096,10 @@ bool recoEvents::extendHit(int idet, int ih, int direction, double *gext)
   double lpos[3], &Xr = lpos[0], &Yr = lpos[1], &Zr = lpos[2];
   if (idet==0) {
     unsigned int module, div, strip; parseCellID(idet,cID,module,div,strip);
-    double Rr, phir, rot; g2lCyMBaL(Mx,My,Mz,div,Xr,Yr,Zr,Rr,phir,0,&rot);
-    double crot = std::cos(rot), srot = std::sin(rot);
-    double Pxr = crot*Px+srot*Py, Pyr = -srot*Px+crot*Py;
-    // Momentum: sections 3 and 4 are rotated by 180°.
-    double lmom[3]; lmom[0] = Pxr; lmom[1] = Pyr;
-    int section = div>>3; lmom[2] = section<2 ? +Pz : -Pz;
+    double Rr, phir; g2lCyMBaL(Mx,My,Mz,div,Xr,Yr,Zr,Rr,phir);
+    double lmom[3]; g2lCyMBaL(Px,Py,Pz,div,lmom);
     // Limitations
-    int staveType = section==1 || section==2 ? 0 : 1;
+    int section = div>>3, staveType = section==1 || section==2 ? 0 : 1;
     double endPhi = hWidths[0][staveType], startPhi = -endPhi;
     double dZ = ZHLengths[0];
     // Target = extreme edge of counterpart SUBVOLUME.
@@ -1140,25 +1114,6 @@ bool recoEvents::extendHit(int idet, int ih, int direction, double *gext)
 	     evtNum,idet,ih,cID&0xffffffff,cID>>32,Rr,pm*direction,rT,status);
       printf("%.2f,%.2f(%.4f),%.2f mm %.4f,%.4f,%.4f GeV\n",
 	     Xr,Yr,Rr,Zr,lmom[0],lmom[1],lmom[2]);
-      //#define DRAW_EVT
-#ifdef DRAW_EVT
-      printf("double lpos[3] = {%.6f,%.6f,%.6f};\n",
-	     lpos[0]/10,lpos[1]/10,lpos[2]/10);
-      printf("double lmom[3] = {%.6f,%.6f,%.6f};\n",lmom[0],lmom[1],lmom[2]);
-      printf("double path = %.6f;\n",hit.pathLength/10);
-      double r0 = radii[0][staveType], rMin, rMax;
-      rMin = r0-volumeThicknesses[0]/2;
-      rMax = r0-volumeThicknesses[0]/2+radiatorThicknesses[0];
-      rMin /= 10; rMax /= 10;
-      double dZ = ZHLengths[0]/10;
-      printf("double pars[5] = {%.5f,%.5f,%.5f,%.5f,%.5f};\n",
-	rMin,rMax,startPhi,endPhi,dZ);
-      rMin = r0+volumeThicknesses[0]/2-radiatorThicknesses[0];
-      rMax = r0+volumeThicknesses[0]/2;
-      rMin /= 10; rMax /= 10;
-      printf("double r2s[2] = {%.5f,%.5f};\n",rMin,rMax);
-      printf("DrawEvt(pars,lpos,lmom,path,r2s);\n");
-#endif      
       return false;
     }
     else {
@@ -1302,17 +1257,13 @@ void recoEvents::DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
     if (idet==0) {
       // Globals -> Locals
       unsigned int module, div, strip; parseCellID(idet,cID,module,div,strip);
-      double Rr, phir, rot; g2lCyMBaL(Mx,My,Mz,div,Xr,Yr,Zr,Rr,phir,0,&rot);
+      double Rr, phir, rot; g2lCyMBaL(Mx,My,Mz,div,Xr,Yr,Zr,Rr,phir);
       lpos[0] = Xr/10; lpos[1] = Yr/10; lpos[2] = Zr/10;
-      double crot = std::cos(rot), srot = std::sin(rot);
-      double Pxr = crot*Px+srot*Py, Pyr = -srot*Px+crot*Py;
-      // Momentum: sections 3 and 4 are rotated by 180°.
-      double lmom[3]; lmom[0] = Pxr; lmom[1] = Pyr;
-      int section = div>>3; lmom[2] = section<2 ? +Pz : -Pz;
+      double lmom[3]; g2lCyMBaL(Px,Py,Pz,div,lmom);
       // Pathlength
       double path = hit.pathLength/10;
       // Parameters
-      int staveType = section==1 || section==2 ? 0 : 1;
+      int section = div>>3, staveType = section==1 || section==2 ? 0 : 1;
       double r0 = radii[0][staveType], rMin, rMax;
       rMin = r0-volumeThicknesses[0]/2;
       rMax = r0-volumeThicknesses[0]/2+radiatorThicknesses[0];
@@ -1325,6 +1276,7 @@ void recoEvents::DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
       rMin /= 10; rMax /= 10;
       double r2s[2] = {rMin,rMax};
       
+      printf("SimHit 0x%08lx,0x%08lx\n",cID&0xffffffff,cID>>32);
       printf("double lpos[3] = {%.6f,%.6f,%.6f};\n",
 	     lpos[0]/10,lpos[1]/10,lpos[2]/10);
       printf("double lmom[3] = {%.6f,%.6f,%.6f};\n",lmom[0],lmom[1],lmom[2]);
@@ -1340,12 +1292,9 @@ void recoEvents::DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
     else if (idet==1) {
       // Globals -> Locals
       unsigned int module, div, strip; parseCellID(idet,cID,module,div,strip);
-      double Rcdphi, Ur, Vr, rot; g2lOuter(Mx,My,Mz,module,Rcdphi,Xr,Yr,Zr,Ur,Vr,&rot);
+      double Rcdphi, Ur, Vr; g2lOuter(Mx,My,Mz,module,Rcdphi,Xr,Yr,Zr,Ur,Vr);
       lpos[0] = Zr/10; lpos[1] = Xr/10; lpos[2] = Yr/10;
-      double crot = std::cos(rot), srot = std::sin(rot);
-      double Pxr = crot*Px+srot*Py, Pyr = -srot*Px+crot*Py;
-      // Momentum: sections 3 and 4 are rotated by 180°.
-      double lmom[3]; lmom[0] = Pxr; lmom[1] = Pyr; lmom[2] = Pz;
+      double lmom[3]; g2lOuter(Px,Py,Pz,module,lmom);
       // Pathlength
       double path = hit.pathLength/10;
       // Parameters

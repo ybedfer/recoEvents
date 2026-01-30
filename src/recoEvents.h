@@ -19,7 +19,7 @@ recoEvents ana(events,0xf); // Instantiate for all of (0x1:CyMBaL,0x2:Outer,0x4:
 ana.select = new TTreeFormula("select", "@MCParticles.size()==1", events);// Add rejection cut
 ana.requirePDG = 13;        // Require MCParticle = mu-
 ana.requireQuality = 2;     // Require primary (!=0) and reject primary w/ interfering secondary in same module (>1)
-ana.verbose = 0x111;        // Debugging printout (1 for CyMBaL, 2 for Outer...)
+ana.verbose = 0x1111;       // Debugging printout (1 for CyMBaL, 2 for Outer...)
 // ***** 5-SUBVOLUME: is default. SimHits are coalesced alla MPGDTrackerDigi
 recoEvents ana(events,0xf,0x0); // Instantiate w/ no strips (i.e. pixels) in CyMBaL and Outer
 ana.nSensitiveSurfaces = 1; // Overwrite default.
@@ -55,6 +55,7 @@ t->Scan("EventHeader.eventNumber:@OuterMPGDBarrelHits.size():OuterMPGDBarrelHits
 #include <TDirectory.h>
 #include <TH1.h>
 #include <TH2.h>
+#include <TProfile2D.h>
 #include <TMath.h>
 #include <TCanvas.h>
 #include <TStyle.h>
@@ -90,9 +91,9 @@ t->Scan("EventHeader.eventNumber:@OuterMPGDBarrelHits.size():OuterMPGDBarrelHits
 using namespace std;
 using namespace edm4hep;
 
-typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *RA, *R, *phi, *phir, *th, *mod, *thphi, *XY, *ZR, *Rr, *XYr[4], *Ur, *Vr; }
+typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *RA, *R, *phi, *phir, *th, *mod, *thphi, *XY, *ZR, *Rr, *xyr, *Ur, *Vr; }
   Histos;
-typedef struct{ TDirectory *dir; TH1D *X, *Y, *Z, *R, *Rr, *D, *phi, *phir, *Ur, *Vr; }
+typedef struct{ TDirectory *dir; TH1D *X, *Y, *Z, *R, *Rr, *D, *phi, *phir, *Ur, *Vr; TProfile2D *xyr; }
   Resids;
 
 void SetPaveText(TH1 *h, int mode = 0);
@@ -144,6 +145,8 @@ public :
    int nSensitiveSurfaces;
    // GEOMETRY
    // CyMBal: 4 sections * 8 staves, numbering from 0
+   unsigned int MPGDs;
+   bool isMPGD(int idet);
    static constexpr int nModules[N_DETs] =  {32,24,128,68};
    static constexpr int moduleMns[N_DETs] = { 0, 0,  1, 1};
    double volumeThicknesses[N_DETs];   // Overall thickness
@@ -154,7 +157,6 @@ public :
    vector<double> hWidths[N_DETs];    // HalfWidths
    double ZHLengths[N_DETs];          // HalfLengths
 
-   // ********** HISTOS
    // ***** SELECTION
    TTreeFormula *select; // Provides for specifying a rejection cut.
    // ***** EVENT SELECTION
@@ -165,7 +167,10 @@ public :
    // Requirements for filling "simHs" and residuals
    int requirePDG;     // Associated MCParticle 
    int requireQuality; // "SimTrackerHit::quality". =1: reject secondary hits, >1: reject hit w/ secondary in same module
+
+   // ********** HISTOS
    void BookHistos(Histos *Hs, const char *tag);
+   void getxyArgs(int idet, double &xMx, double &yMx, string &sT);
    unsigned int getStatus(int idet, int ih);
    unsigned int getStatus(int idet, int ih, map<int,int> &sim2coa);
    void fillHit(int iSimRec, int idet,
@@ -177,14 +182,16 @@ public :
    bool parseStrip(int idet, int simOrRec, unsigned int &strip);
    void g2lCyMBaL(double X,   double Y,   double Z, unsigned int div,
 		  double &Xr, double &Yr, double &Zr,
-		  double &Rr, double &phir,
-		  int *zone = 0, // Whether in peak, L/R edge, else
-		  double *rot = 0);
+		  double &Rr, double &phir);
+   void g2lCyMBaL(double Px, double Py, double Pz, unsigned int div,
+		  double *lmom);
    void l2gCyMBaL(double *lpos, int div, double *gpos);
    void g2lOuter(double X, double Y, double Z, unsigned int div,
 		 double &Rcphi, double &Xr, double &Yr, double &Zr,
 		 double &Ur, double &Vr,
 		 double *rot = 0);
+   void g2lOuter(double Px, double Py, double Pz, unsigned int module,
+		 double *lmom);
    bool samePMO(int idet, int ih, int jh);
    bool extrapolate(int idet, int ih, int jh);
    bool coalesce(int idet, vector<int> coalesced, SimTrackerHitData &hext);
@@ -451,6 +458,7 @@ void recoEvents::Init(TTree *tree)
 // ********** GEOMETRY
 void recoEvents::initGeometry(unsigned int hasStrips)
 {
+  MPGDs = 0x3;
   for (int idet = 0; idet<N_DETs; idet++) {
     volumeThicknesses[idet]=radiatorThicknesses[idet] = 0;
   }
@@ -471,15 +479,30 @@ void recoEvents::initGeometry(unsigned int hasStrips)
     double dZs[nSs] = {670.0,103.5,-528.5,-1095.0}; // mm
     for (int section = 0; section<nSs; section++)
       sectionDZs[0].push_back(dZs[section]);
-    hWidths[0].push_back(0.41441); hWidths[0].push_back(0.39861);
+    // <constant name="MMModuleWidth"                          value="46.0*cm"/>
+    // Width is converted in angle
+    // <constant name="MMOuterSector_R"                        value="57.7*cm"/>
+    // <constant name="MMInnerSector_R"                        value="55.5*cm"/>
+    double hwidth = 230, rmins[2] = {555,577};
+    for (int io = 0; io<2; io++) hWidths[0].push_back(hwidth/rmins[io]);
+    //hWidths[0].push_back(0.41441); hWidths[0].push_back(0.39861);
+    // <constant name="MMModuleLength"                         value="61.0*cm"/>
     ZHLengths[0] = 305;
     // Outer
     radii[1].push_back(737.4650);
+    sectionDZs[1].push_back(-880); sectionDZs[1].push_back(-830);
     hWidths[1].push_back(165);
     ZHLengths[1] = 840;
   }
 }
 // *************** HISTOS
+void setAxes(TAxis *ax, int nDiv, int maxDigits)
+{
+  ax->SetNdivisions(nDiv); ax->SetLabelFont(62);
+  ax->SetLabelSize(.055);  ax->SetLabelOffset(.006);
+  ax->SetTitleSize(.065);  ax->SetTitleOffset(.8);
+  if (maxDigits) ax->SetMaxDigits(maxDigits);
+}
 void recoEvents::BookHistos(Histos *Hs, const char* tag)
 {
   using namespace ROOT;
@@ -644,14 +667,8 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     int nh2s = sizeof(h2s)/sizeof(TH2D*);
     for (int ih = 0; ih<nh2s; ih++) {
       if (!(0x1<<idet&flags[ih])) continue;
-      TAxis *ax = h2s[ih]->GetXaxis();
-      ax->SetNdivisions(505); ax->SetLabelFont(62);
-      ax->SetLabelSize(.055); ax->SetLabelOffset(.006);
-      ax->SetTitleSize(.065); ax->SetTitleOffset(.8);
-      TAxis *ay = h2s[ih]->GetYaxis();
-      ay->SetNdivisions(505); ay->SetLabelFont(62);
-      ay->SetLabelSize(.055); ay->SetLabelOffset(.006);
-      ay->SetMaxDigits(2);
+      setAxes(h2s[ih]->GetXaxis(),505,0);
+      setAxes(h2s[ih]->GetYaxis(),505,2);
     }
     // ***** 2D HISTOS: X vs. Y, R vs. Z, theta vs. phi
     string sT;
@@ -661,18 +678,9 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     snprintf(hT,lT,";#font[32]{%c}  #font[22]{(mm)}   ",'Y');
     sT += string(hT); const char *hTXY = sT.c_str();
     hs.XY = new TH2D(hN,hTXY,256,-dX, dX,256,-dY,dY);
-    if (idet==0) { // If CyMBaL
-      snprintf(hT,lT,"%s;#font[32]{%c}r  #font[22]{(mm)}   ",dN,'X');
-      sT = string(hT);
-      snprintf(hT,lT,";#font[32]{%c}r  #font[22]{(mm)}   ",'Y');
-      sT += string(hT); const char *hTXY = sT.c_str();
-      double Xr0 = dX*cos(pi/8)*.9, dYr = dY*sin(pi/8);
-      int cols[4] = {kGray,4,8,2};
-      for (int zone = 0; zone<4; zone++) {
-	snprintf(hN,lN,"hXYr%d",zone);
-	hs.XYr[zone] = new TH2D(hN,hTXY,256,Xr0,dX,256,-dYr,dYr);
-	hs.XYr[zone]->SetLineColor(cols[zone]);
-      }
+    if (isMPGD(idet)) { // If MPGD: xyr = 2D in local coordinates
+      double xMx, yMx; string sT = string(dN); getxyArgs(idet,xMx,yMx,sT);
+      hs.xyr = new TH2D("hxyr",hTXY,256,-xMx,xMx,256,-yMx,yMx);
     }
     snprintf(hN,lN,"%s%s",tag,"ZR");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'Z');
@@ -687,20 +695,11 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     sT += string(hT); const char *hTthphi = sT.c_str();
     hs.thphi = new TH2D(hN,hTthphi,128,-pi,pi,128,0,pi);
     TH2D *H2s[] = {hs.XY,hs.ZR,hs.thphi,
-		   hs.XYr[0],hs.XYr[1],hs.XYr[2],hs.XYr[3]}; // CyMBaL specific
+      hs.xyr}; // MPGD specific
     int nH2s = sizeof(H2s)/sizeof(TH2D*);
-    if (idet!=0) nH2s -= 4; // If !CyMBaL, cancel hs.XYr
+    if (!isMPGD(idet)) nH2s -= 1; // If !MPGD, cancel hs.XYr
     for (int ih = 0; ih<nH2s; ih++) {
-      TAxis *ax = H2s[ih]->GetXaxis();
-      ax->SetNdivisions(505); ax->SetLabelFont(62);
-      ax->SetLabelSize(.055); ax->SetLabelOffset(.006);
-      ax->SetTitleSize(.065); ax->SetTitleOffset(.8);
-      ax->SetMaxDigits(2);
-      TAxis *ay = H2s[ih]->GetYaxis();
-      ay->SetNdivisions(505); ay->SetLabelFont(62);
-      ay->SetLabelSize(.055); ay->SetLabelOffset(.006);
-      ay->SetTitleSize(.065); ay->SetTitleOffset(.8);
-      ay->SetMaxDigits(2);
+      setAxes(H2s[ih]->GetXaxis(),505,2); setAxes(H2s[ih]->GetYaxis(),505,2);
     }
     if (isRec) {
       // ******************** RESIDUALS ********************
@@ -794,19 +793,52 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       int nr1s = sizeof(r1s)/sizeof(TH1D*);
       for (int ih = 0; ih<nr1s; ih++) {
 	if (!(0x1<<idet&flags[ih])) continue;
-	TAxis *ax = r1s[ih]->GetXaxis();
-	ax->SetNdivisions(515); ax->SetLabelFont(62);
-	ax->SetLabelSize(.055); ax->SetLabelOffset(.006);
-	ax->SetTitleSize(.065); ax->SetTitleOffset(.8);
-	ax->SetMaxDigits(3);
-	TAxis *ay = r1s[ih]->GetYaxis();
-	ay->SetNdivisions(505); ay->SetLabelFont(62);
-	ay->SetLabelSize(.055); ay->SetLabelOffset(.006);
-	ay->SetMaxDigits(3);
+	setAxes(r1s[ih]->GetXaxis(),515,3); setAxes(r1s[ih]->GetYaxis(),505,3);
+      }
+      // ***** 2D HISTOS: residuals vs. (x,y)
+      if (idet==1) { // Only if Outer: xyr = 2D in local coordinates
+	// (The idea is to illustrate how the shape of the distribution of
+	// residuals along the non-measurement axis (typically asymmeric) arises
+	// from the dependence of the hit count upon Z.)
+	char coord = iStrip==1?'V':'U';
+	snprintf(hN,lN,"d%cxy",coord);
+	char sN[] = " - dU"; sprintf(sN," - d%c",coord);
+	string sT = string(dN); sT += string(sN);
+	double xMx, yMx; getxyArgs(idet,xMx,yMx,sT);
+	rs.xyr = new TProfile2D(hN,sT.c_str(),256,-xMx,xMx,256,-yMx,yMx);
+	setAxes(rs.xyr->GetXaxis(),505,3); setAxes(rs.xyr->GetYaxis(),505,3);
       }
     }
   }
   dSave->cd();
+}
+void recoEvents::getxyArgs(int idet, double &xMx, double &yMx, string &sT)
+{
+ char hT[] =
+   ";#font[32]{R#phi}r  #font[22]{(mm)};#font[32]{Z}r  #font[22]{(mm)}   ";
+ size_t lT = strlen(hT)+1;;
+ if (idet==0) {
+   snprintf(hT,lT,";#font[32]{%s}r  #font[22]{(mm)}   ","R#phi");
+   sT += string(hT);
+   snprintf(hT,lT,";#font[32]{%s}r  #font[22]{(mm)}   ","Z");
+   sT += string(hT); const char *hTxy = sT.c_str();
+   // Innner and outer sections do not yield the exact same Rphi range
+   // Let's take the average
+   int io; for (io = 0, xMx = 0; io<2; io++)
+	     xMx += radii[idet][io]*hWidths[idet][io];
+   xMx /= 2;
+ } else if (idet==1) {
+   snprintf(hT,lT,";#font[32]{%s}r  #font[22]{(mm)}   ","X");
+   sT += string(hT);
+   snprintf(hT,lT,";#font[32]{%s}r  #font[22]{(mm)}   ","Y");
+   sT += string(hT); const char *hTxy = sT.c_str();
+   xMx = hWidths[idet][0];
+ }
+ yMx = ZHLengths[idet];
+}
+bool recoEvents::isMPGD(int idet)
+{
+  return 0x1<<idet&MPGDs;
 }
 
 Bool_t recoEvents::Notify()
