@@ -147,8 +147,8 @@ void recoEvents::Loop(int nEvents, int firstEvent)
       map<int,vector<int>,less<int>> rec2coas;
       debugAssoc(idet);
       if (nAshs!=nArhs) {
-	printf("Evt #%5d Warning: %3d det %d: ash(%d)!=arh(%d)\n",
-	       evtNum,(int)jentry,idet,nAshs,nArhs);
+	printf("Evt #%5d Warning: det %d: ash(%d)!=arh(%d)\n",
+	       evtNum,idet,nAshs,nArhs);
       }
       else {
 	// raw -> Rec
@@ -328,7 +328,10 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     if (doPrint>1)
       printf("Rr,Rrs: %.2f,%.2f\n",Rr,Rrs);
     double dRr = 1000*(Rr-Rrs), dphir = 1000*(phir-phirs);
-    rs.Rr->Fill(dRr); rs.phir->Fill(dphir);
+    rs.Rr->Fill(dRr);
+    int section = module/8; int staveType = (section==1 || section==2)?0:1;
+    double radius = radii[0][staveType];
+    rs.Rphir->Fill(radius*dphir);
     if (doPrint) {
       if (strip==1 && fabs(dZ)>480 || strip==0 && fabs(dphir)>1) {
 	//if (strip==1 && fabs(dZ)>0) {
@@ -688,18 +691,33 @@ bool recoEvents::extrapolate(int idet, int ih, int jh)
   return ok;
 }
 bool recoEvents::coalesce(int idet, vector<int> coalesced, SimTrackerHitData &hext) {
-  int ic, ih3, ih4, ih0; double eDep; for (ic = 0, ih3=ih4=ih0 = -1, eDep = 0;
-					   ic<(int)coalesced.size(); ic++) {
+  // Basic idea: simplify the problem by disregarding as much as possible the
+  // thin SUBVOLUMES...
+  // ...Yet still taking into account their eDep.
+  // I)  If SUBVOLUMES 0x3 *and* 0x4, position of calesced hit is half way
+  //  between 0x3 and 0x4 extrema.
+  // II) If SUBVOLUMES 0x3 *or*  0x4, we fall back on the single SUBVOLUME case
+  //  and "extend" the single subHit.
+  // III) Else, rare case where only thin SUBVOLUMES, we assign the position
+  //  to one of the subHits, preferentially 0x0.
+  int ihs[5] = {-1,-1,-1,-1,-1};
+  int ic; unsigned int hPat; double eDep; for (ic = 0, eDep = 0, hPat = 0;
+					       ic<(int)coalesced.size(); ic++) {
     int ih = coalesced[ic]; SimTrackerHitData &hit = hits[idet]->at(ih);
     int subVolID = hit.cellID>>28&0xf;
-    if      (subVolID==0x3) ih3 = ih;
-    else if (subVolID==0x4) ih4 = ih;
-    else if (subVolID==0x0) ih0 = ih;
-    else if (ih0<0)         ih0 = ih;
+    if (subVolID>4) {
+      unsigned long cID = hit.cellID;
+      printf("Evt #%5d Warning: det %d: SimHit %d(0x%08lx,0x%08lx) has invalid subVolID = %d\n",
+	     evtNum,idet,ih,cID&0xffffffff,cID>>32,subVolID);
+      continue;
+    }
+    ihs[subVolID] = ih; hPat |= 0x1<<subVolID;
     eDep += hit.eDep;
   }
-  if (ih3>=0 && ih4>=0) { // ***** 0x7-COALESCENCE
-    // - Set position = 1/2sum of hits extrapolated by 1/2-pathLength.
+  if ((hPat&0x18)==0x18) { // ***** COALESCE SUBVOLUMES 0x3 anD 0x4
+    // - Set position = 1/2sum of hits extrapolated by 1/2-pathLength (
+    //  disregarding thin SUBVOLUMES, which are still accounted for in "eDep").
+    int ih3 = ihs[3], ih4 = ihs[4];
     SimTrackerHitData &h3t = hits[idet]->at(ih3), &h4t = hits[idet]->at(ih4);
     const Vector3d &pos = h3t.position, &pqs = h4t.position;
     double Mx = pos.x, My = pos.y, Mz = pos.z;
@@ -737,20 +755,42 @@ bool recoEvents::coalesce(int idet, vector<int> coalesced, SimTrackerHitData &he
     hext.cellID = h3t.cellID;
     hext.quality = h3t.quality; // Coalesced hits passed samePMO => same quality
     if (doDebug)
-      printf("%d(0x%08lx,0x%08lx,%.2f,%.2f,%.2f) + %d(0x%08lx,0x%08lx,%.2f,%.2f,%.2f) -> %.2f,%.2f,%.2f\n",
+      printf("%d(0x%08lx,0x%08lx,%.2f,%.2f,%.2f) + %d(0x%08lx,0x%08lx,%.2f,%.2f,%.2f) -> %.2f,%.2f,%.2f",
 	     ih3,h3t.cellID&0xffffffff,h3t.cellID>>32,Mx,My,Mz,
 	     ih4,h4t.cellID&0xffffffff,h4t.cellID>>32,Nx,Ny,Nz,
 	     pext.x,pext.y,pext.z);
-    return true;
   }
-  else if (ih0>=0) {
-    SimTrackerHitData &hit = hits[idet]->at(ih0);
+  else if (hPat&0x18) {
+    // One of SUBVOLUMES 0x3 or 0x4: extend corresponding subHit (disregarding
+    // again thin stuff, which again is nevertheless accounted for in "eDep").
+    int ih = (hPat&0x8) ? ihs[3] : ihs[4];
+    SimTrackerHitData &hit = hits[idet]->at(ih);
+    extend(idet,ih,hext);
+    hext.eDep = eDep;
+    if (doDebug) {
+      unsigned long cID = hit.cellID; const Vector3d &pos = hit.position;
+      double Mx = pos.x, My = pos.y, Mz = pos.z;
+      printf("%d(0x%08lx,0x%08lx,%.2f,%.2f,%.2f)",
+	     ih,cID&0xffffffff,cID>>32,Mx,My,Mz);
+    }
+  }
+  else if (hPat&0x7) {
+    int ih; if (hPat&0x1) ih = ihs[0];
+    else    if (hPat&0x2) ih = ihs[1];
+    else                  ih = ihs[2];
+    SimTrackerHitData &hit = hits[idet]->at(ih);
     hext.position = hit.position; hext.eDep = eDep;
     hext.cellID = hit.cellID; hext.quality = hit.quality;
-    return true;
+    if (doDebug) {
+      unsigned long cID = hit.cellID; const Vector3d &pos = hit.position;
+      double Mx = pos.x, My = pos.y, Mz = pos.z;
+      printf("%d(0x%08lx,0x%08lx,%.2f,%.2f,%.2f)",
+	     ih,cID&0xffffffff,cID>>32,Mx,My,Mz);
+    }
   }
   else {
-    printf("#%5d: Inconsistency\n",evtNum);
+    printf("#%5d: Inconsistency: pattern of hits to be coalesced = 0x%x\n",
+	   evtNum,hPat);
     for (int ic = 0; ic<(int)coalesced.size(); ic++) {
       int ih = coalesced[ic]; SimTrackerHitData &hit = hits[idet]->at(ih);
       printf("%d: 0x%08lx,0x%08lx %.2f,%.2f,%.2f\n",
@@ -759,7 +799,22 @@ bool recoEvents::coalesce(int idet, vector<int> coalesced, SimTrackerHitData &he
     }
     return false;
   }
-  return false;
+  if (doDebug) {
+    unsigned long cID = hext.cellID;
+    unsigned int module, div, strip; parseCellID(idet,cID,module,div,strip);
+    const Vector3d &pos = hext.position;
+    double Mx = pos.x, My = pos.y, Mz = pos.z;
+    if (idet==0) {
+      double Xr, Yr, Zr, Rr, phir;
+      g2lCyMBaL(Mx,My,Mz,div,Xr,Yr,Zr,Rr,phir);
+      printf(" <-> %.2f,%.2f,%.2f Rr=%.3f\n",Xr,Yr,Zr,Rr);
+    } else if (idet==1) {
+      double Rcdphi, Xr, Yr, Zr, Ur, Vr;
+      g2lOuter(Mx,My,Mz,module,Rcdphi,Xr,Yr,Zr,Ur,Vr);
+      printf(" <-> %.2f,%.2f,%.2f Zr=%.3f\n",Xr,Yr,Zr,Zr);
+    }
+  }
+  return true;
 }
 void recoEvents::extend(int idet, int ih, SimTrackerHitData &hext)
 {

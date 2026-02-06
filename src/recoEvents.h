@@ -93,7 +93,7 @@ using namespace edm4hep;
 
 typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *RA, *R, *phi, *phir, *th, *mod, *thphi, *XY, *ZR, *Rr, *xyr, *Ur, *Vr; }
   Histos;
-typedef struct{ TDirectory *dir; TH1D *X, *Y, *Z, *R, *Rr, *D, *phi, *phir, *Ur, *Vr; TProfile2D *xyr; }
+typedef struct{ TDirectory *dir; TH1D *X, *Y, *Z, *R, *Rr, *D, *phi, *Rphir, *Ur, *Vr; TProfile2D *xyr; }
   Resids;
 
 void SetPaveText(TH1 *h, int mode = 0);
@@ -718,7 +718,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	  // For phi, X, etc... no way to have limit at bin edge, since we have
 	  // 2 distinct sensitive surface radii, viz. 55.6755 and 57.8755
 	  double dphi_Z = 2*pi/8/2; dphi_Z *= 1.20;
-	  double RsurfMx = 578.755, dx_Z = dphi_Z*RsurfMx;
+	  double RsurfMx = radii[0][1], dx_Z = dphi_Z*RsurfMx;
 	  dz_phi *= 1000; dx_Z *= 1000; dphi_Z *= 1000; // mm -> µm, rad -> mrad
 	  if (iStrip==1) dz = dz_phi;
 	  else { dphi = dphi_Z; dx = dx_Z; }
@@ -777,14 +777,14 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'D');
       rs.D =   new TH1D(hN,hT,512,-dd,dd);
       snprintf(hN,lN,"%c%s",'d',"phi");
-      snprintf(hT,lT,"%s;d#scale[1.2]{#varphi}  #font[22]{(mrad)}   ", dN);
+      snprintf(hT,lT,"%s;d#scale[1.2]{#varphi}r  #font[22]{(mrad)}   ", dN);
       rs.phi = new TH1D(hN,hT,512,-dphi,dphi); 
-      snprintf(hN,lN,"%c%s",'d',"phir");
-      snprintf(hT,lT,"%s;d#scale[1.2]{#varphi}r  #font[22]{(mrad)}   ",dN);
-      rs.phir = new TH1D(hN,hT,512,-dphi,dphi); 
+      snprintf(hN,lN,"%c%s",'d',"Rphir");
+      snprintf(hT,lT,"%s;Rd#scale[1.2]{#varphi}r  #font[22]{(mrad)}   ",dN);
+      rs.Rphir = new TH1D(hN,hT,512,-dx,dx); 
       TH1D *r1s[] =          {rs.X, rs.Y,rs.R,rs.Z,rs.D,rs.phi,
 			      rs.Rr,         // MPGD specific
-			      rs.phir,       // CyMBaL specific
+			      rs.Rphir,      // CyMBaL specific
 			      rs.Ur,rs.Vr};  // Outer specific
       unsigned int flags[] = { 0xf,  0xf, 0xf, 0xf, 0xf,   0xf,
 			       0x3,
@@ -1078,7 +1078,7 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
     TH1D *r1s[4] = {rs.X, rs.Z, rs.phi, rs.R};
     if      (idet==0) { // CyMBaL: precision is on 'phir' or 'Z' alternatively,
       // depending upon strip's coord. 'Rr': let's check it's a Dirac.
-      r1s[2] = rs.phir;               r1s[3] = rs.Rr;
+      r1s[2] = rs.Rphir;              r1s[3] = rs.Rr;
     }
     else if (idet==1) { // Outer:  precision is on 'Ur' or 'Vr' alternatively,
       // depending upon strip's coord. 'Rr' = "Rcos(dphi)": check it's a Dirac. 
