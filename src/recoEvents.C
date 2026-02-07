@@ -133,7 +133,7 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	// - It's rather "coa" rather than "sim"
 	const Vector3d &pos = hit.position;
 	double X = pos.x, Y = pos.y, Z = pos.z;
-	fillHit(0,idet,X,Y,Z,hit.cellID);
+	fillHit(0,idet,X,Y,Z,hit.eDep,hit.cellID);
 	debugHit(idet,hit);
       }
       if (!reconstruction) continue;
@@ -229,8 +229,8 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	      fillResids(idet,pos,psim,rec.cellID);
 	    }
 	  }
-	  if (selecRec) {
-	    fillHit(1,idet,X,Y,Z,rec.cellID);     // ***** FILL rec HISTOS
+	  if (selecRec) {  // ***** FILL rec HISTOS
+	    fillHit(1,idet,X,Y,Z,rec.edep,rec.cellID);
 	    debugRec(idet,ir);
 	  }
 	}
@@ -263,7 +263,8 @@ unsigned int recoEvents::getStatus(int idet, int ih, map<int,int> &sim2coa)
   return status;
 }
 void recoEvents::fillHit(int simOrRec, int idet,
-			 double X, double Y, double Z, unsigned long cellID)
+			 double X, double Y, double Z, double eDep,
+			 unsigned long cellID)
 {
   unsigned int module, div, strip; parseCellID(idet,cellID,module,div,strip);
   // ***** STRIP: Convert stripID -> strip. Is it valid? 
@@ -281,6 +282,9 @@ void recoEvents::fillHit(int simOrRec, int idet,
   hs->Z->Fill(Z,div);
   hs->phi->Fill(phi,div); hs->th->Fill(theta,div);
   hs->mod->Fill(module,div);
+  double gain = simOrRec ? gains[idet] : 1;
+  hs->eDep->Fill(eDep*1e6/gain,div);
+  // 2D histos
   hs->thphi->Fill(phi,theta);
   hs->XY->Fill(X,Y); hs->ZR->Fill(Z,R);
 
@@ -357,7 +361,7 @@ void recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     rs.Rr->Fill(dRcdphi);
     double dUr = 1000*(Ur-Urs), dVr = 1000*(Vr-Vrs);
     rs.Ur->Fill(dUr); rs.Vr->Fill(dVr);
-    rs.xyr->Fill(Xrs,Yrs,strip?dUr:dVr);
+    //rs.xyr->Fill(Xrs,Yrs,strip?dUr:dVr);
     if (doPrint) {
       if (strip==0 && fabs(dUr)>580 || strip==1 && fabs(dVr)>580) {
       //if (strip==1 && fabs(dU)>0) {

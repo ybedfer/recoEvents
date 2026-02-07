@@ -91,12 +91,12 @@ t->Scan("EventHeader.eventNumber:@OuterMPGDBarrelHits.size():OuterMPGDBarrelHits
 using namespace std;
 using namespace edm4hep;
 
-typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *RA, *R, *phi, *phir, *th, *mod, *thphi, *XY, *ZR, *Rr, *xyr, *Ur, *Vr; }
+typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *RA, *R, *phi, *phir, *th, *mod, *thphi, *XY, *ZR, *Rr, *xyr, *Ur, *Vr, *eDep; }
   Histos;
-typedef struct{ TDirectory *dir; TH1D *X, *Y, *Z, *R, *Rr, *D, *phi, *Rphir, *Ur, *Vr; TProfile2D *xyr; }
+typedef struct{ TDirectory *dir; TH1D *X, *Y, *Z, *R, *Rr, *D, *phi, *Rphir, *Ur, *Vr; /* TProfile2D *xyr; */}
   Resids;
 
-void SetPaveText(TH1 *h, int mode = 0);
+void SetPaveText(TH1 *h, int mode = 0, int opt = 0);
 
 class recoEvents: public TNamed {
 public :
@@ -143,7 +143,7 @@ public :
    // Depending upon setup, MPGDs can have more than one sensitive surfaces.
    // Can be 1, 2 or 5.
    int nSensitiveSurfaces;
-   // GEOMETRY
+   // GEOMETRY/CONFIGURATION
    // CyMBal: 4 sections * 8 staves, numbering from 0
    unsigned int MPGDs;
    bool isMPGD(int idet);
@@ -156,6 +156,7 @@ public :
    vector<double> sectionDZs[N_DETs]; // Transform global -> local
    vector<double> hWidths[N_DETs];    // HalfWidths
    double ZHLengths[N_DETs];          // HalfLengths
+   double gains[N_DETs];
 
    // ***** SELECTION
    TTreeFormula *select; // Provides for specifying a rejection cut.
@@ -174,7 +175,7 @@ public :
    unsigned int getStatus(int idet, int ih);
    unsigned int getStatus(int idet, int ih, map<int,int> &sim2coa);
    void fillHit(int iSimRec, int idet,
-		double X, double Y, double Z, unsigned long cellID);
+		double X, double Y, double Z, double E, unsigned long cellID);
    void fillResids(int idet,
 		   const Vector3f &pos, const Vector3d &psim, unsigned long cellID);
    void parseCellID(int idet, unsigned long ID,
@@ -493,6 +494,10 @@ void recoEvents::initGeometry(unsigned int hasStrips)
     sectionDZs[1].push_back(-880); sectionDZs[1].push_back(-830);
     hWidths[1].push_back(165);
     ZHLengths[1] = 840;
+    // MPGDs
+    //digi_cfg.gain                = 10000;
+    gains[0]=gains[1] = 10000;
+    gains[1]=gains[2] = 1;
   }
 }
 // *************** HISTOS
@@ -500,7 +505,7 @@ void setAxes(TAxis *ax, int nDiv, int maxDigits)
 {
   ax->SetNdivisions(nDiv); ax->SetLabelFont(62);
   ax->SetLabelSize(.055);  ax->SetLabelOffset(.006);
-  ax->SetTitleSize(.065);  ax->SetTitleOffset(.8);
+  ax->SetTitleSize(.065);  ax->SetTitleOffset(1.0);
   if (maxDigits) ax->SetMaxDigits(maxDigits);
 }
 void recoEvents::BookHistos(Histos *Hs, const char* tag)
@@ -547,9 +552,10 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     double dX, dY, RAve, dR, ZMn, ZMx;
     int nMods = nModules[idet], modMn = moduleMns[idet], nDivs, nLayers;
     double dUr = 0;
+    double eDBin0;
     if      (idet==0) { // ********** CyMBaL
       dX=dY = 600;
-      RAve = 565; dR = 25;
+      RAve = (radii[0][0]+radii[0][1])/2; dR = 25;
       // ***** Z RANGE: Let extrema of sensitive area fall on bin edge
       // From: epic/compact/tracking/definitions_craterlake.xml
       //<constant name="InnerMPGDBarrel_zmin"            value="105*cm"/> <comment> negative z </comment>
@@ -559,10 +565,11 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       ZMn = -1000; ZMx = 1380;
       nDivs = nMods;
       nLayers = 1;
+      eDBin0 = .02; // keV
     }
     else if (idet==1) { // ********** µRWELL
       dX=dY = 800;
-      RAve = 735; dR = 20;
+      RAve = radii[1][0]; dR = 20;
       // <constant name="MPGDOuterBarrelModule_zmin1"     value="164.5*cm"/>
       // <constant name="MPGDOuterBarrelModule_zmin2"     value="174.5*cm"/>
       ZMn = -1645; ZMx = 1745;
@@ -576,6 +583,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       double deltaUr = dRangeUr/224; dUr = dRangeUr+16*deltaUr;
       nDivs = 2;
       nLayers = nDivs;
+      eDBin0 = .02; // keV
     }
     else if (idet==2) { // ********** VERTEX
       dX=dY = 140;
@@ -586,6 +594,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       ZMn = -135; ZMx = 135;
       nDivs = 3; // 3 layers
       nLayers = nDivs;
+      eDBin0 = 1; // keV
     }
     else if (idet==3) { // ********** Si
       dX=dY = 500;
@@ -597,6 +606,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       ZMn = -500; ZMx = 500;
       nDivs = 2;
       nLayers = nDivs;
+      eDBin0 = 1; // keV
     }
     // Z: 224 for core part + 2*16 bins on the edge to get possible stray hits
     double dZ = 16*(ZMx-ZMn)/224; ZMn -= dZ; ZMx += dZ;
@@ -657,13 +667,27 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     snprintf(hN,lN,"%s%s",tag,"mod");
     snprintf(hT,lT,"%s;module#",dN);
     hs.mod = new TH2D(hN,hT,nMods,modMn-.5,modMn+nMods-.5,nLayers,divMn,divMx);
+    // ***** eDep
+    // Log binning
+    double sq4_10 = sqrt(sqrt(10.)), sq16_10 = sqrt(sqrt(sq4_10)), sq64_10 = sqrt(sqrt(sq16_10));
+#define N_eDBINS 256
+    double eDBin; int bin; double eDBins[N_eDBINS+1];
+    for (bin = 0, eDBin = eDBin0/sq4_10; bin<=N_eDBINS; bin++) {
+      eDBins[bin] = eDBin; eDBin *= sq64_10;
+    }
+    snprintf(hN,lN,"%s%s",tag,"eDep");
+    snprintf(hT,lT,"%s;eDep (keV)   ",dN);
+    hs.eDep = new TH2D(hN,hT,N_eDBINS,eDBins,nDivs,divMn,divMx);
+
     TH2D *h2s[] = {hs.X,hs.Y,hs.RA,hs.R,hs.Z,hs.phi,hs.th,hs.mod,
 		   hs.Rr,        // CyMBaL/Outer specific
-		   hs.Ur,hs.Vr}; // Outer specific
+		   hs.Ur,hs.Vr,  // Outer specific
+		   hs.eDep};
     unsigned int flags[] =
       /* */       { 0xf, 0xf,  0xf, 0xf, 0xf,   0xf,  0xf,   0xf,
 		    0x3,
-		    0x2, 0x2};
+		    0x2, 0x2,
+		    0xf};
     int nh2s = sizeof(h2s)/sizeof(TH2D*);
     for (int ih = 0; ih<nh2s; ih++) {
       if (!(0x1<<idet&flags[ih])) continue;
@@ -714,7 +738,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	  // From: epic/compact/tracking/mpgd_barrel.xml
 	  // <constant name="MMModuleLength"                         value="61.0*cm"/>
 	  // 256-16-16 bins for the core part, 2x32 bins outside 
-	  double modL = 610, deltaZ = modL/192, dz_phi = modL/2+32*deltaZ;
+	  double modL = ZHLengths[0]*2, deltaZ = modL/192, dz_phi = modL/2+32*deltaZ;
 	  // For phi, X, etc... no way to have limit at bin edge, since we have
 	  // 2 distinct sensitive surface radii, viz. 55.6755 and 57.8755
 	  double dphi_Z = 2*pi/8/2; dphi_Z *= 1.20;
@@ -777,11 +801,13 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'D');
       rs.D =   new TH1D(hN,hT,512,-dd,dd);
       snprintf(hN,lN,"%c%s",'d',"phi");
-      snprintf(hT,lT,"%s;d#scale[1.2]{#varphi}r  #font[22]{(mrad)}   ", dN);
+      snprintf(hT,lT,"%s;d#scale[1.2]{#varphi}  #font[22]{(mrad)}   ", dN);
       rs.phi = new TH1D(hN,hT,512,-dphi,dphi); 
-      snprintf(hN,lN,"%c%s",'d',"Rphir");
-      snprintf(hT,lT,"%s;Rd#scale[1.2]{#varphi}r  #font[22]{(mrad)}   ",dN);
-      rs.Rphir = new TH1D(hN,hT,512,-dx,dx); 
+      if (idet==0) { // CyMBaL specific
+	snprintf(hN,lN,"%c%s",'d',"Rphir");
+	snprintf(hT,lT,"%s;Rd#scale[1.2]{#varphi}r  #font[22]{(#mum)}   ",dN);
+	rs.Rphir = new TH1D(hN,hT,512,-dx,dx); 
+      }
       TH1D *r1s[] =          {rs.X, rs.Y,rs.R,rs.Z,rs.D,rs.phi,
 			      rs.Rr,         // MPGD specific
 			      rs.Rphir,      // CyMBaL specific
@@ -795,6 +821,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	if (!(0x1<<idet&flags[ih])) continue;
 	setAxes(r1s[ih]->GetXaxis(),515,3); setAxes(r1s[ih]->GetYaxis(),505,3);
       }
+      /*
       // ***** 2D HISTOS: residuals vs. (x,y)
       if (idet==1) { // Only if Outer: xyr = 2D in local coordinates
 	// (The idea is to illustrate how the shape of the distribution of
@@ -808,6 +835,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	rs.xyr = new TProfile2D(hN,sT.c_str(),256,-xMx,xMx,256,-yMx,yMx);
 	setAxes(rs.xyr->GetXaxis(),505,3); setAxes(rs.xyr->GetYaxis(),505,3);
       }
+      */
     }
   }
   dSave->cd();
@@ -905,26 +933,34 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
       cEvents = new TCanvas(cN,cN);
       cEvents->Divide(2,2);
       pad = 1;
-      gStyle->SetOptStat(10);
+      //gStyle->SetOptStat(10);
     }
     else {
       cEvents = cPrv;
       pad = ipad;
     }
     // ***** LOOP ON (selected subset of) HISTOS
-    TH2D *h2s[4] = { hs.phi,hs.th,hs.Z,hs.R };
+    TH2D *h2s[5] = { hs.phi,hs.th,hs.Z,hs.R,hs.eDep};
+    unsigned int flags[5] = // 0x1: OptStat = 1110, 0x2: Logx, 0x4: Logy
+      /* */        {      0,    0,   0, 0x4,    0x3};
     if (idet<2) h2s[3] = hs.Rr;
-    for (int ih = 0; ih<4; ih++) {
+    int ih, jh; for (ih=jh = 0; ih<5 && jh<4; ih++) {
       if (!(0x1<<ih&histoPattern)) continue;
       cEvents->cd(pad++); gPad->SetBottomMargin(.15);
       TH2D *h2 = h2s[ih];
       TH1D *hproj = h2->ProjectionX(); hproj->Draw();
-      hproj->SetMinimum(0); // Useful for hs.phi
+      if (flags[ih]&0x4) {
+	hproj->SetMinimum(1); gPad->SetLogy();
+      }
+      else
+	hproj->SetMinimum(0); // Useful for hs.phi
+      if (flags[ih]&0x2) gPad->SetLogx();
       TAxis *ay = hproj->GetYaxis();
       ay->SetNdivisions(505); ay->SetLabelFont(62);
       ay->SetLabelSize(.055); ay->SetLabelOffset(.006);
       ay->SetMaxDigits(2);
-      SetPaveText(hproj);
+      int optStat = (flags[ih]&0x1) ? 1110 : 10;
+      SetPaveText(hproj,0,optStat);
       if (decompose) {
 	char tag[] = "_3";
 	if      (idet==0 && (ih==0 || ih==3)) { // CyMBaL phi, R
@@ -964,6 +1000,7 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
 	  }
 	}
       }
+      jh++;
     }
   }
   dSave->cd();
@@ -1047,7 +1084,7 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
     return;
   }
   // ***** CONTEXT
-  gStyle->SetOptStat(1110);
+  //gStyle->SetOptStat(1110);
   string prvFormat = string(gStyle->GetStatFormat());
   TDirectory *dSave = gDirectory;
   // ***** LOOP ON DETECTORS
@@ -1076,13 +1113,16 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
     // ***** LOOP ON RESIDUALS (in subset)
     Resids &rs = resHs[strip][idet]; rs.dir->cd();
     TH1D *r1s[4] = {rs.X, rs.Z, rs.phi, rs.R};
-    if      (idet==0) { // CyMBaL: precision is on 'phir' or 'Z' alternatively,
+    int printIntegral = 0; // Print Integral intead of Entries, to check for Under/Overflow
+    if      (idet==0) { // CyMBaL: precision is on 'Rphir' or 'Z' alternatively,
       // depending upon strip's coord. 'Rr': let's check it's a Dirac.
       r1s[2] = rs.Rphir;              r1s[3] = rs.Rr;
+      printIntegral = iRec==1 ? 2 : 1; // Integral on Rphir/Z
     }
     else if (idet==1) { // Outer:  precision is on 'Ur' or 'Vr' alternatively,
       // depending upon strip's coord. 'Rr' = "Rcos(dphi)": check it's a Dirac. 
       r1s[1] = rs.Ur; r1s[2] = rs.Vr; r1s[3] = rs.Rr;
+      printIntegral = iRec==1 ? 1 : 2; // Integral on Ur/Vr
     }
     for (int ih = 0; ih<4; ih++) {
       if (!(0x1<<ih&histoPattern)) continue;
@@ -1099,8 +1139,9 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
 	  o = l->After(o);
 	}
       }
-      if (superImpose) { h1->Draw("sames"); SetPaveText(h1,1); }
-      else             { h1->Draw();        SetPaveText(h1,0); }
+      int optStat = ih==printIntegral ? 1001100 : 1110;
+      if (superImpose) { h1->Draw("sames"); SetPaveText(h1,1,optStat); }
+      else             { h1->Draw();        SetPaveText(h1,0,optStat); }
       //  Ndivisions policy: 505 -> 510, when Xaxis labels come close to the edge and collide w/ the Yaxis 0 label
       TAxis *ax = h1->GetXaxis();
       double xLabel = ax->GetXmax()/pow(10,int(log10(ax->GetXmax())));
@@ -1113,21 +1154,27 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
 }
 #include "TPaveText.h"
 #include "TPaveStats.h"
-void SetPaveText(TH1 *h, int mode)
+void SetPaveText(TH1 *h, int mode, int opt)
 {
   TPad *pad = (TPad*)gPad; pad->Update();
 
   int col = h->GetLineColor();
 
-  int optStat = gStyle->GetOptStat();
-  double dY, X1; if (optStat==10)   { dY = .10; X1 = .70; }
-  else           if (optStat==1110) { dY = .22; X1 = .55; }
+  string format = string("6.3g");
+  int optStat = opt ? opt : 10;
+  double dY, X1; if (optStat==10)      { dY = .10; X1 = .70; }
+  else           if (optStat==1110)    { dY = .22; X1 = .55; }
+  else           if (optStat==1001100) {
+    /* */                                dY = .22; X1 = .55;
+    format = string("6.0f");
+  }
 
   TPaveStats *st; if ((st = (TPaveStats*)h->GetFunction("stats"))) {
     st->SetTextFont(62);
     st->SetX2NDC(.995); st->SetX1NDC(.60);
     st->SetY2NDC(.995-mode*dY); st->SetY1NDC(.995-(mode+1)*dY);
-    //st->SetOptStat(1000010);
+    st->SetOptStat(optStat);
+    st->SetStatFormat(format.c_str());
     st->SetTextColor(col);
     st->Draw();
   }
@@ -1255,4 +1302,19 @@ void recoEvents::SetMinima(double min)
   cOuterRes->Print(pdfName.c_str(),"Title:Outer");
   cVertexRes->Print(pdfName.c_str(),"Title:Vertex");
   cSiRes->Print(pdfClose.c_str(),"Title:Si");
+*/
+/*
+  // PDF w/ EmbededFonts
+  string pdfName("Sim.CyMBaL.PR#2177.pdf");
+  cCyMBaL->Print(pdfName.c_str(),"EmbedFonts");
+  string pdfName("Res.CyMBaL.PR#2177.pdf");
+  cCyMBaLRes->Print(pdfName.c_str(),"EmbedFonts");
+  string pdfName("Sim.Outer.PR#2177.pdf");
+  cOuter->Print(pdfName.c_str(),"EmbedFonts");
+  string pdfName("Res.Outer.PR#2177.pdf");
+  cOuterRes->Print(pdfName.c_str(),"EmbedFonts");
+  string pdfName("AllSim.CyMBaL.PR#2177.pdf");
+  cCyMBaL1->Print(pdfName.c_str(),"EmbedFonts");
+  string pdfName("AllRes.CyMBaL.PR#2177.pdf");
+  cCyMBaL1Res->Print(pdfName.c_str(),"EmbedFonts");
 */
