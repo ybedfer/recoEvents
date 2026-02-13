@@ -650,8 +650,9 @@ bool recoEvents::extrapolate(int idet, int ih, int jh)
   bool doPrint = doDebug&0x100;
   if (!doPrint && !ok) {
     // Do print debugging message, even if not requested, when extrpolation
-    // turns out to fail in case status is 0x3.
-    unsigned status = getStatus(idet,ih); doPrint = status==0x3;
+    // turns out to fail in case status is 0x3 and despite quality requirement.
+    unsigned status = getStatus(idet,ih);
+    doPrint = (status==0x3) && requireQuality==2;
   }
   if (doPrint) {
     printf("%d,%d dext %f\n",ih,jh,dext);

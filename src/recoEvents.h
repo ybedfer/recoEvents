@@ -156,7 +156,7 @@ public :
    vector<double> sectionDZs[N_DETs]; // Transform global -> local
    vector<double> hWidths[N_DETs];    // HalfWidths
    double ZHLengths[N_DETs];          // HalfLengths
-   double gains[N_DETs];
+   double gains[N_DETs], eDThresholds[N_DETs];
 
    // ***** SELECTION
    TTreeFormula *select; // Provides for specifying a rejection cut.
@@ -498,6 +498,11 @@ void recoEvents::initGeometry(unsigned int hasStrips)
     //digi_cfg.gain                = 10000;
     gains[0]=gains[1] = 10000;
     gains[1]=gains[2] = 1;
+    // Thresholds on eDep
+    //.threshold      = 100 * dd4hep::eV, in "MPGD.cc"
+    eDThresholds[0]=eDThresholds[1]= .1;
+    //.threshold = 0.54 * dd4hep::keV, in "BVTX.cc","BTRK.cc"
+    eDThresholds[2]=eDThresholds[3]= .54;
   }
 }
 // *************** HISTOS
@@ -552,7 +557,6 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     double dX, dY, RAve, dR, ZMn, ZMx;
     int nMods = nModules[idet], modMn = moduleMns[idet], nDivs, nLayers;
     double dUr = 0;
-    double eDBin0;
     if      (idet==0) { // ********** CyMBaL
       dX=dY = 600;
       RAve = (radii[0][0]+radii[0][1])/2; dR = 25;
@@ -565,7 +569,6 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       ZMn = -1000; ZMx = 1380;
       nDivs = nMods;
       nLayers = 1;
-      eDBin0 = .02; // keV
     }
     else if (idet==1) { // ********** µRWELL
       dX=dY = 800;
@@ -583,7 +586,6 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       double deltaUr = dRangeUr/224; dUr = dRangeUr+16*deltaUr;
       nDivs = 2;
       nLayers = nDivs;
-      eDBin0 = .02; // keV
     }
     else if (idet==2) { // ********** VERTEX
       dX=dY = 140;
@@ -594,7 +596,6 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       ZMn = -135; ZMx = 135;
       nDivs = 3; // 3 layers
       nLayers = nDivs;
-      eDBin0 = 1; // keV
     }
     else if (idet==3) { // ********** Si
       dX=dY = 500;
@@ -606,7 +607,6 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       ZMn = -500; ZMx = 500;
       nDivs = 2;
       nLayers = nDivs;
-      eDBin0 = 1; // keV
     }
     // Z: 224 for core part + 2*16 bins on the edge to get possible stray hits
     double dZ = 16*(ZMx-ZMn)/224; ZMn -= dZ; ZMx += dZ;
@@ -668,11 +668,15 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     snprintf(hT,lT,"%s;module#",dN);
     hs.mod = new TH2D(hN,hT,nMods,modMn-.5,modMn+nMods-.5,nLayers,divMn,divMx);
     // ***** eDep
-    // Log binning
+    // Log binning: set a bin edge at threshold
+    double eDThr = eDThresholds[idet];
     double sq4_10 = sqrt(sqrt(10.)), sq16_10 = sqrt(sqrt(sq4_10)), sq64_10 = sqrt(sqrt(sq16_10));
 #define N_eDBINS 256
     double eDBin; int bin; double eDBins[N_eDBINS+1];
-    for (bin = 0, eDBin = eDBin0/sq4_10; bin<=N_eDBINS; bin++) {
+    for (bin = 64, eDBin = eDThr; bin>=0; bin--) {
+      eDBins[bin] = eDBin; eDBin /= sq64_10;
+    }
+    for (bin = 64, eDBin = eDThr; bin<=N_eDBINS; bin++) {
       eDBins[bin] = eDBin; eDBin *= sq64_10;
     }
     snprintf(hN,lN,"%s%s",tag,"eDep");
