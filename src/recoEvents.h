@@ -91,9 +91,9 @@ t->Scan("EventHeader.eventNumber:@OuterMPGDBarrelHits.size():OuterMPGDBarrelHits
 using namespace std;
 using namespace edm4hep;
 
-typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *RA, *R, *phi, *phir, *th, *mod, *thphi, *XY, *ZR, *Rr, *xyr, *Ur, *Vr, *eDep; }
+typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *R, *phi, *phir, *th, *mod, *thphi, *XY, *ZR, *Rr, *xyr, *Ur, *Vr, *eDep; }
   Histos;
-typedef struct{ TDirectory *dir; TH1D *X, *Y, *Z, *R, *Rr, *D, *phi, *Rphir, *Ur, *Vr; /* TProfile2D *xyr; */}
+typedef struct{ TDirectory *dir; TH1D *X, *Y, *Z, *phi, *Rr, *Rphir, *Ur, *Vr; /* TProfile2D *xyr; */}
   Resids;
 
 void SetPaveText(TH1 *h, int mode = 0, int opt = 0);
@@ -151,12 +151,13 @@ public :
    static constexpr int moduleMns[N_DETs] = { 0, 0,  1, 1};
    double volumeThicknesses[N_DETs];   // Overall thickness
    double radiatorThicknesses[N_DETs]; // Thickness of RADIATOR SUBVOLUME
-   vector<double> radii[N_DETs];
+   vector<double> radii[N_DETs];      // in mm
    int nSections[N_DETs];
    vector<double> sectionDZs[N_DETs]; // Transform global -> local
    vector<double> hWidths[N_DETs];    // HalfWidths
    double ZHLengths[N_DETs];          // HalfLengths
-   double gains[N_DETs], eDThresholds[N_DETs];
+   vector<double> pitches[N_DETs];    // pitch in mm
+   double gains[N_DETs], eDThresholds[N_DETs], resolutions[N_DETs];
 
    // ***** SELECTION
    TTreeFormula *select; // Provides for specifying a rejection cut.
@@ -168,7 +169,8 @@ public :
    // Requirements for filling "simHs" and residuals
    int requirePDG;     // Associated MCParticle 
    int requireQuality; // "SimTrackerHit::quality". =1: reject secondary hits, >1: reject hit w/ secondary in same module
-
+   int requireOffEdge; //  SimHit (or coalesced) not on edge
+  
    // ********** HISTOS
    void BookHistos(Histos *Hs, const char *tag);
    void getxyArgs(int idet, double &xMx, double &yMx, string &sT);
@@ -176,8 +178,11 @@ public :
    unsigned int getStatus(int idet, int ih, map<int,int> &sim2coa);
    void fillHit(int iSimRec, int idet,
 		double X, double Y, double Z, double E, unsigned long cellID);
-   void fillResids(int idet,
+   bool fillResids(int idet,
 		   const Vector3f &pos, const Vector3d &psim, unsigned long cellID);
+   unsigned int isOnEdge(int idet, unsigned long cellID,
+			 double Xs, double Ys, double Zs);
+   double getResCut(int idet, int module, int strip, bool isOnEdge);
    void parseCellID(int idet, unsigned long ID,
 		    unsigned int &module, unsigned int &div, unsigned int &strip);
    bool parseStrip(int idet, int simOrRec, unsigned int &strip);
@@ -186,13 +191,13 @@ public :
 		  double &Rr, double &phir);
    void g2lCyMBaL(double Px, double Py, double Pz, unsigned int div,
 		  double *lmom);
-   void l2gCyMBaL(double *lpos, int div, double *gpos);
-   void g2lOuter(double X, double Y, double Z, unsigned int div,
+   void l2gCyMBaL(double *lpos, unsigned int div, double *gpos);
+   void g2lOuter(double X, double Y, double Z, unsigned int module,
 		 double &Rcphi, double &Xr, double &Yr, double &Zr,
-		 double &Ur, double &Vr,
-		 double *rot = 0);
+		 double &Ur, double &Vr);
    void g2lOuter(double Px, double Py, double Pz, unsigned int module,
 		 double *lmom);
+   void l2gOuter(double *lpos, unsigned int module, double *gpos);
    bool samePMO(int idet, int ih, int jh);
    bool extrapolate(int idet, int ih, int jh);
    bool coalesce(int idet, vector<int> coalesced, SimTrackerHitData &hext);
@@ -202,6 +207,8 @@ public :
    bool extendHit(int idet, int ih, int direction, double *lext);
    // ***** EVENT CONTROL, DEBUGGING
    void initDetEvent();
+   void requestDebug(int idet, unsigned int level);
+   bool debugIsOn(unsigned int level);
    void updateDetEvent(int idet, int ih);
    void finaliseDetEvent();
    bool moduleSelection(unsigned long cellID);
@@ -278,6 +285,7 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
   requireModules = 0; // Default: all modules allowed
   requirePDG =     0; // Default: do not require any ID
   requireQuality = 0; // Default: do not require "SimTrackerHit::quality"
+  requireOffEdge = 0; // Default: do not require off edge
   // Check that arg. "hasStrips" fits the pattern of MPGDs
   unsigned int MPGDs = 0x3; // CyMBaL and Outer
   if ((hasStrips&MPGDs)!=hasStrips) {
@@ -486,14 +494,19 @@ void recoEvents::initGeometry(unsigned int hasStrips)
     // <constant name="MMInnerSector_R"                        value="55.5*cm"/>
     double hwidth = 230, rmins[2] = {555,577};
     for (int io = 0; io<2; io++) hWidths[0].push_back(hwidth/rmins[io]);
-    //hWidths[0].push_back(0.41441); hWidths[0].push_back(0.39861);
     // <constant name="MMModuleLength"                         value="61.0*cm"/>
     ZHLengths[0] = 305;
+    //<constant name="MMnStripsPhi"    value = "512" /> 
+    //<constant name="MMnStripsZ"      value = "512" />
+    int nStripsPhi = 512; pitches[0].push_back(2*hwidth/nStripsPhi);
+    int nStripsZ =   512; pitches[0].push_back(2*ZHLengths[0]/nStripsZ);
     // Outer
     radii[1].push_back(737.4650);
-    sectionDZs[1].push_back(-880); sectionDZs[1].push_back(-830);
+    sectionDZs[1].push_back(880); sectionDZs[1].push_back(-830);
     hWidths[1].push_back(165);
     ZHLengths[1] = 840;
+    //<constant name="MPGDOuterBarrelPitch"                        value = "800*um" />
+    double outerPitch = 800; pitches[1].push_back(outerPitch/1000);
     // MPGDs
     //digi_cfg.gain                = 10000;
     gains[0]=gains[1] = 10000;
@@ -503,6 +516,9 @@ void recoEvents::initGeometry(unsigned int hasStrips)
     eDThresholds[0]=eDThresholds[1]= .1;
     //.threshold = 0.54 * dd4hep::keV, in "BVTX.cc","BTRK.cc"
     eDThresholds[2]=eDThresholds[3]= .54;
+    // Resolution? Same for all MPGDs
+    //digi_cfg.stripResolutions[0] = digi_cfg.stripResolutions[1] = 150 * dd4hep::um;
+    resolutions[0]=resolutions[1] = 150; // in µm
   }
 }
 // *************** HISTOS
@@ -629,9 +645,6 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     snprintf(hN,lN,"%s%s",tag,"Y");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'Y');
     hs.Y =   new TH2D(hN,hT,256,-dY,  dY,nDivs,divMn,divMx);
-    snprintf(hN,lN,"%s%s",tag,"RA");
-    snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'R');
-    hs.RA =  new TH2D(hN,hT,256,  0,RAMx,nDivs,divMn,divMx);
     snprintf(hN,lN,"%s%s",tag,"R");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'R');
     hs.R =   new TH2D(hN,hT,256,RMn, RMx,nDivs,divMn,divMx);
@@ -683,12 +696,12 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     snprintf(hT,lT,"%s;eDep (keV)   ",dN);
     hs.eDep = new TH2D(hN,hT,N_eDBINS,eDBins,nDivs,divMn,divMx);
 
-    TH2D *h2s[] = {hs.X,hs.Y,hs.RA,hs.R,hs.Z,hs.phi,hs.th,hs.mod,
+    TH2D *h2s[] = {hs.X,hs.Y,hs.Z,hs.R,hs.phi,hs.th,hs.mod,
 		   hs.Rr,        // CyMBaL/Outer specific
 		   hs.Ur,hs.Vr,  // Outer specific
 		   hs.eDep};
     unsigned int flags[] =
-      /* */       { 0xf, 0xf,  0xf, 0xf, 0xf,   0xf,  0xf,   0xf,
+      /* */       { 0xf, 0xf, 0xf, 0xf,   0xf,  0xf,   0xf,
 		    0x3,
 		    0x2, 0x2,
 		    0xf};
@@ -778,9 +791,6 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       snprintf(hN,lN,"%c%s",'d',"Y");
       snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'Y');
       rs.Y =   new TH1D(hN,hT,256,-dx,dx);
-      snprintf(hN,lN,"%c%s",'d',"R");
-      snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'R');
-      rs.R =   new TH1D(hN,hT,256,-dr,dr);
       if      (idet==0) { // If CyMBaL
 	snprintf(hN,lN,"%c%s",'d',"Rr");
 	snprintf(hT,lT,"%s;d#font[32]{%c}r  #font[22]{(#mum)}   ",dN,'R');
@@ -801,9 +811,6 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       snprintf(hN,lN,"%c%s",'d',"Z");
       snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'Z');
       rs.Z =   new TH1D(hN,hT,256,-dz,dz);
-      snprintf(hN,lN,"%c%s",'d',"dist");
-      snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'D');
-      rs.D =   new TH1D(hN,hT,512,-dd,dd);
       snprintf(hN,lN,"%c%s",'d',"phi");
       snprintf(hT,lT,"%s;d#scale[1.2]{#varphi}  #font[22]{(mrad)}   ", dN);
       rs.phi = new TH1D(hN,hT,512,-dphi,dphi); 
@@ -812,11 +819,11 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	snprintf(hT,lT,"%s;Rd#scale[1.2]{#varphi}r  #font[22]{(#mum)}   ",dN);
 	rs.Rphir = new TH1D(hN,hT,512,-dx,dx); 
       }
-      TH1D *r1s[] =          {rs.X, rs.Y,rs.R,rs.Z,rs.D,rs.phi,
+      TH1D *r1s[] =          {rs.X, rs.Y,rs.Rr,rs.Z,rs.phi,
 			      rs.Rr,         // MPGD specific
 			      rs.Rphir,      // CyMBaL specific
 			      rs.Ur,rs.Vr};  // Outer specific
-      unsigned int flags[] = { 0xf,  0xf, 0xf, 0xf, 0xf,   0xf,
+      unsigned int flags[] = { 0xf,  0xf,  0xf, 0xf,   0xf,
 			       0x3,
 			       0x1,
 			       0x2,  0x2};
@@ -1116,7 +1123,7 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
     gStyle->SetStatFormat("6.3g");
     // ***** LOOP ON RESIDUALS (in subset)
     Resids &rs = resHs[strip][idet]; rs.dir->cd();
-    TH1D *r1s[4] = {rs.X, rs.Z, rs.phi, rs.R};
+    TH1D *r1s[4] = {rs.X, rs.Z, rs.phi, rs.Rr};
     int printIntegral = 0; // Print Integral intead of Entries, to check for Under/Overflow
     if      (idet==0) { // CyMBaL: precision is on 'Rphir' or 'Z' alternatively,
       // depending upon strip's coord. 'Rr': let's check it's a Dirac.
