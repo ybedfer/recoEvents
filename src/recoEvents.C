@@ -143,62 +143,10 @@ void recoEvents::Loop(int nEvents, int firstEvent)
       if (!reconstruction) continue;
 
       // ********** ASSOCIATION: BUILD rec -> coa MAP
-      int nArhs = arhs[idet]->size(); // Associations raw hit
-      int nAshs = ashs[idet]->size(); // Associations sim hit
-      int nRecs = recs[idet]->size(); // Rec hits
-      if (!(nArhs||nAshs||nHits||nRecs)) continue;
-      int nARhs = aRhs[idet]->size(); // Associations Rec Hit -> raw hit
       map<int,vector<int>,less<int>> rec2coas;
-      debugAssoc(idet);
-      if (nAshs!=nArhs) {
-	printf("Evt #%5d Warning: det %d: ash(%d)!=arh(%d)\n",
-	       evtNum,idet,nAshs,nArhs);
-      }
-      else {
-	// raw -> Rec
-	// raw can only be associated to one Rec, by construction...
-	// ...and vice-versa, by convention imprinted in edm4hep::TrackerHit
-	map<int,int,less<int>> raw2rec;
-	for (int iR = 0; iR<nARhs; iR++) {
-	  podio::ObjectID &aRh = aRhs[idet]->at(iR); raw2rec[aRh.index] = iR;
-	}
-	// Rec <-> coas
-	for (int ih = 0; ih<nArhs; ih++) {
-	  // ***** LOOP ON raw AND sims
-	  // raw: "rIndex"
-	  podio::ObjectID &arh = arhs[idet]->at(ih); //RawHitAssociations_rawHit
-	  int rIndex = arh.index;
-	  // raw -> rec: "RIndex"
-	  map<int,int>::const_iterator ir = raw2rec.find(rIndex);
-	  if (ir==raw2rec.end())
-	    // One raw may be lost here, but that lost one is then associated to
-	    // the same sims as the retained one.
-	    continue;
-	  int RIndex = ir->second;
-	  // sim: "sIndex"
-	  podio::ObjectID &ash = ashs[idet]->at(ih); //RawHitAssociations_simHit
-	  int sIndex = ash.index;
-	  // sim -> coa: "cIndex"
-	  map<int,int>::const_iterator is = sim2coa.find(sIndex);
-	  if (is==sim2coa.end()) continue;
-	  int cIndex = is->second;
-	  // Rec -> coa
-	  map<int,vector<int>>::iterator im = rec2coas.find(RIndex);
-	  if (im==rec2coas.end()) {
-	    vector<int> coas; coas.push_back(cIndex); rec2coas[RIndex] = coas;
-	  } else {
-	    // Not twice same SimHit associated to RecHit.
-	    vector<int> &coas = im->second;
-	    int is, match; for (int is=match = 0; is<(int)coas.size(); is++) {
-	      if (coas[is]==cIndex) { match = 1; break; }
-	    }
-	    if (!match) coas.push_back(cIndex);
-	  }
-	}
-	debugAssoc(idet,raw2rec,sim2coa,rec2coas);
-      }
+      if (!getrec2coas(idet,sim2coa,rec2coas)) continue;
 
-      for (int ir = 0; ir<nRecs; ir++) {
+      for (int ir = 0; ir<(int)recs[idet]->size(); ir++) {
 	// ********** LOOP ON Rec HITS
 	edm4eic::TrackerHitData &rec = recs[idet]->at(ir);
 	const Vector3f &pos = rec.position;
@@ -249,8 +197,7 @@ unsigned int recoEvents::getStatus(int idet, int ih)
   unsigned status = 0;
   SimTrackerHitData &hit = hits[idet]->at(ih);
   if (!requireQuality || hit.quality==0)   status |= 0x2;
-  podio::ObjectID &amc = amcs[idet]->at(ih); int mcIdx = amc.index;
-  MCParticleData &part = mcParticles->at(mcIdx);
+  MCParticleData &part = getMCParticle(idet,ih);
   if (!requirePDG || part.PDG==requirePDG) status |= 0x1;
   return status;
 }
@@ -264,6 +211,68 @@ unsigned int recoEvents::getStatus(int idet, int ih, map<int,int> &sim2coa)
     }
   }
   return status;
+}
+MCParticleData& recoEvents::getMCParticle(int idet, int ih)
+{
+  podio::ObjectID &amc = amcs[idet]->at(ih); int mcIdx = amc.index;
+  return mcParticles->at(mcIdx);
+}
+bool recoEvents::getrec2coas(int idet, map<int,int> &sim2coa,
+			     map<int,vector<int>,less<int>> &rec2coas)
+{
+  int nAshs = ashs[idet]->size(); // Associations sim hit
+  int nArhs = arhs[idet]->size(); // Associations raw hit
+  int nRecs = recs[idet]->size(); // Rec hits
+  int nARhs = aRhs[idet]->size(); // Associations Rec Hit -> raw hit
+  if (!(nArhs||nAshs||nRecs)) return false;
+  debugAssoc(idet);
+  if (nAshs!=nArhs) {
+    printf("Evt #%5d Warning: det %d: ash(%d)!=arh(%d)\n",
+	   evtNum,idet,nAshs,nArhs);
+    return false;
+  }
+  // raw -> Rec
+  // raw can only be associated to one Rec, by construction...
+  // ...and vice-versa, by convention imprinted in edm4hep::TrackerHit
+  map<int,int,less<int>> raw2rec;
+  for (int iR = 0; iR<nARhs; iR++) {
+    podio::ObjectID &aRh = aRhs[idet]->at(iR); raw2rec[aRh.index] = iR;
+  }
+  // Rec <-> coas
+  for (int ih = 0; ih<nArhs; ih++) {
+    // ***** LOOP ON raw AND sims
+    // raw: "rIndex"
+    podio::ObjectID &arh = arhs[idet]->at(ih); //RawHitAssociations_rawHit
+    int rIndex = arh.index;
+    // raw -> Rec: "RIndex"
+    map<int,int>::const_iterator iR = raw2rec.find(rIndex);
+    if (iR==raw2rec.end())
+      // One raw may be lost here, but that lost one is then associated to
+      // the same sims as the retained one.
+      continue;
+    int RIndex = iR->second;
+    // sim: "sIndex"
+    podio::ObjectID &ash = ashs[idet]->at(ih); //RawHitAssociations_simHit
+    int sIndex = ash.index;
+    // sim -> coa: "cIndex"
+    map<int,int>::const_iterator is = sim2coa.find(sIndex);
+    if (is==sim2coa.end()) continue;
+    int cIndex = is->second;
+    // Rec -> coa
+    map<int,vector<int>>::iterator im = rec2coas.find(RIndex);
+    if (im==rec2coas.end()) {
+      vector<int> coas; coas.push_back(cIndex); rec2coas[RIndex] = coas;
+    } else {
+      // Not twice same SimHit associated to RecHit.
+      vector<int> &coas = im->second;
+      int is, match; for (int is=match = 0; is<(int)coas.size(); is++) {
+	if (coas[is]==cIndex) { match = 1; break; }
+      }
+      if (!match) coas.push_back(cIndex);
+    }
+  }
+  debugAssoc(idet,raw2rec,sim2coa,rec2coas);
+  return true;
 }
 void recoEvents::fillHit(int simOrRec, int idet,
 			 double X, double Y, double Z, double eDep,

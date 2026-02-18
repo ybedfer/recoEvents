@@ -176,6 +176,9 @@ public :
    void getxyArgs(int idet, double &xMx, double &yMx, string &sT);
    unsigned int getStatus(int idet, int ih);
    unsigned int getStatus(int idet, int ih, map<int,int> &sim2coa);
+   MCParticleData& getMCParticle(int idet, int ih);
+   bool getrec2coas(int idet, map<int,int> &sim2coa,
+		    map<int,vector<int>,less<int>> &rec2coas);
    void fillHit(int iSimRec, int idet,
 		double X, double Y, double Z, double E, unsigned long cellID);
    bool fillResids(int idet,
