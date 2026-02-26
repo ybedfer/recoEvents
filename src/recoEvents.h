@@ -127,7 +127,7 @@ public :
    // Modules where LONE PRIMARY, i.e. primary hit w/o secondary offsprings
    unsigned long modulesLP, moduleLP;
    unsigned long modulesLP1; // In addition, single hit
-   unsigned int doDebug; // Debug control
+   unsigned int doDebug; int debuggedDet; // Debug control
    int evtToDebug; // "evtNum" of event to be debugged
    // Verbosity:
    // 0xh<<Idet, h = 0x1: SimHit/RecHit, 0x10: Association, 0x100: Coalescing/Extending, 0x1000: Large residuals
@@ -513,7 +513,7 @@ void recoEvents::initGeometry(unsigned int hasStrips)
     // MPGDs
     //digi_cfg.gain                = 10000;
     gains[0]=gains[1] = 10000;
-    gains[1]=gains[2] = 1;
+    gains[2]=gains[3] = 1;
     // Thresholds on eDep
     //.threshold      = 100 * dd4hep::eV, in "MPGD.cc"
     eDThresholds[0]=eDThresholds[1]= .1;

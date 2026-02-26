@@ -288,7 +288,6 @@ void recoEvents::fillHit(int simOrRec, int idet,
   double theta = rho?acos(Z/rho):999*pi;
   Histos *hs; if (simOrRec==0) hs = &(simHs[idet]);
   else                         hs = &(recHs[strip][idet]);
-  //  printf("======= %d %d %u %p\n",simOrRec,idet,strip,hs);
   hs->X->Fill(X,div); hs->Y->Fill(Y,div); hs->R->Fill(R,div);
   hs->Z->Fill(Z,div);
   hs->phi->Fill(phi,div); hs->th->Fill(theta,div);
@@ -316,23 +315,21 @@ void recoEvents::fillHit(int simOrRec, int idet,
 }
 bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim, unsigned long cellID)
 {
-  int doPrint = 0;
-  if (verbose&0x1000<<idet || evtNum==evtToDebug) {
-    doPrint = 1; if (verbose&0x10000) doPrint = 2;
-  }
+  // Debugging
+  requestDebug(idet,0x1000);
+  // Determine residuals: pos-psim
   double Xr = pos.x,  Yr = pos.y,  Zr = pos.z;  // RecHit
   double Xs = psim.x, Ys = psim.y, Zs = psim.z; // SimHit (or coalesced)
   double dX = 1000*(Xr-Xs), dY = 1000*(Yr-Ys), dZ = 1000*(Zr-Zs); // Residuals
   double phir = atan2(Yr,Xr), phis = atan2(Ys,Xs);
   double dphi = 1000*(phir-phis);
-  if (doPrint>1)
-    printf(" dX,dY,dZ: %.2f,%.2f,%.2f",dX,dY,dZ);
   unsigned int module, div, strip; parseCellID(idet,cellID,module,div,strip);
   // ***** STRIP: Convert stripID -> strip. Is it valid? 
   if (!parseStrip(idet,1,strip)) return false;
   // ***** DISREGARD EDGES?
   unsigned int onEdge = isOnEdge(idet,cellID,Xs,Ys,Zs);
-  if (requireOffEdge && onEdge) return false;
+  if (requireOffEdge>0 && onEdge) return false;
+  if (requireOffEdge<0 && !onEdge) return false;
   // ***** FILL GLOBAL RESIDUALS
   Resids &rs = resHs[strip][idet];
   rs.X->Fill(dX); rs.Y->Fill(dY); rs.Z->Fill(dZ); rs.phi->Fill(dphi);
@@ -340,31 +337,41 @@ bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
   if      (idet==0) { // CyMBaL specific
     double Xd, Yd, Zd, Rrr, phirr; g2lCyMBaL(Xr,Yr,Zr,div,Xd,Yd,Zd,Rrr,phir);
     double Xl, Yl, Zl, Rrs, phirs; g2lCyMBaL(Xs,Ys,Zs,div,Xl,Yl,Zl,Rrs,phis);
-    if (doPrint>1)
-      printf("Rr,Rrs: %.2f,%.2f\n",Rrr,Rrs);
     double dRr = 1000*(Rrr-Rrs), dphir = 1000*(phir-phis);
     rs.Rr->Fill(dRr);
     int section = module/8; int staveType = (section==1 || section==2)?0:1;
     double radius = radii[0][staveType];
-    rs.Rphir->Fill(radius*dphir);
+    double Rdphi = radius*dphir; rs.Rphir->Fill(Rdphi);
     // Debugging: 0x1000<<idet
     // - Print outliers, i.e. when residuals > expectation
     // - Expectation depends upon we are on/off edge
-    if (doPrint) {
-      double resCut = getResCut(idet,module,strip,onEdge&0x1<<strip);
-      if (strip==0 && fabs(dphir)>resCut || strip==1 && fabs(dZ)>resCut) {
+    double resCut = getResCut(idet,module,strip,onEdge&0x1<<strip);
+    unsigned int dbg = 0; double RdphiMx = .24e6, dZMx = ZHLengths[0]*1000;
+    if (strip==0 && fabs(dphir)>resCut || strip==1 && fabs(dZ)>resCut)
+      dbg |= 0x1<<strip;
+    if (strip==1 && fabs(Rdphi)>RdphiMx || strip==0 && fabs(dZ)>dZMx*1.01)
+      dbg |= 0x4<<strip;
+    if (dbg) {
+      if (debugIsOn(0x1000)) {
 	//if (strip==1 && fabs(dZ)>0) {
 	printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f R,φ %7.3f mm %7.3fπ\n",
 	       evtNum,cellID&0xffffffff,cellID>>32,
 	       Xd,Yd,Zd,Rrr,phir/TMath::Pi());
-	char text[] ="dφ 1.810 > 1.810 mrd";
+	printf("%16s %12s %7.2f,%7.2f,%8.2f R,φ %7.3f mm %7.3fπ\n",
+	       "SimHit","",
+	       Xl,Yl,Zl,Rrs,phis/TMath::Pi());
+	char text[] ="dφ 1.810 > 1.810 mrd -7000 mm";
 	//           "dZ 1000 > 1000 µm";
 	size_t lt = strlen(text)+1;
-	if (strip==1) snprintf(text,lt,"dZ %4.0f > %4.0f µm",dZ,resCut);
-	else          snprintf(text,lt,"dφ %5.3f > %5.3g mrd",dphir,resCut);
-	printf("%16s %12s %7.2f,%7.2f,%8.2f R,φ %7.3f mm %7.3fπ  %s\n",
-	       "SimHit","",
-	       Xl,Yl,Zl,Rrs,phis/TMath::Pi(),text);
+	if      (dbg&0x2) snprintf(text,lt,"dZ %4.0f > %4.0f µm",dZ,resCut);
+	else if (dbg&0x1) snprintf(text,lt,"dφ %5.3f > %5.3g mrd",dphir,resCut);
+	if      (dbg&0x3) printf("  %s",text);
+	if      (dbg&0x4) snprintf(text,lt,"dZ %4.0f > %4.0f mm %5.0f mm",
+				   dZ/1000,dZMx/1000,Zr);
+	else if (dbg&0x8) snprintf(text,lt,"dφ %5.3f > %5.3g mm %5.1f mrd",
+				   Rdphi/1000,RdphiMx/1000,phir*1000);
+	if      (dbg&0xc) printf(" %s",text);
+	if      (dbg&0xf) printf("\n");
       }
     }
   }
@@ -379,22 +386,34 @@ bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     double dU = 1000*(Ur-Us), dV = 1000*(Vr-Vs);
     rs.Ur->Fill(dU); rs.Vr->Fill(dV);
     //rs.xyr->Fill(Xrs,Yrs,strip?dUr:dVr);
-    if (doPrint) {
-      double resCut = getResCut(idet,module,strip,onEdge&0x1<<strip);
-      if (strip==0 && fabs(dU)>resCut || strip==1 && fabs(dV)>resCut) {
-      //if (strip==1 && fabs(dU)>0) {
+    double resCut = getResCut(idet,module,strip,onEdge&0x1<<strip);
+    unsigned int dbg = 0; double dMx = .75e6;
+    if (strip==0 && fabs(dU)>resCut || strip==1 && fabs(dV)>resCut)
+      dbg |= 0x1<<strip;
+    if (strip==1 && fabs(dU)>dMx || strip==0 && fabs(dV)>dMx)
+      dbg |= 0x4<<strip;
+    if (dbg) {
+	//if (strip==1 && fabs(dU)>0) {
+      if (debugIsOn(0x1000)) {
 	printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f U,V %8.3f,%8.3f mm\n",
 	       evtNum,cellID&0xffffffff,cellID>>32,
 	       Xd,Yd,Zd,Ur,Vr);
-	char text[] ="dU 1000 > 1000 µm"; size_t lt = strlen(text)+1;
-	if (strip==1) snprintf(text,lt,"dV %4.0f > %4.0f µm",dV,resCut);
-	else          snprintf(text,lt,"dU %4.0f > %4.0f µm",dU,resCut);
-	printf("%16s %12s %7.2f,%7.2f,%8.2f U,V %8.3f %8.3f mm %s\n",
-	       "SimHit","",Xl,Yl,Zl,Us,Vs,text);
+	printf("%16s %12s %7.2f,%7.2f,%8.2f U,V %8.3f %8.3f mm\n",
+	       "SimHit","",Xl,Yl,Zl,Us,Vs);
+	char text[] ="dU -1000 > 1000 µm -7000 mm";
+	size_t lt = strlen(text)+1;
+	if      (dbg&0x2) snprintf(text,lt,"dV %4.0f > %4.0f µm",dV,resCut);
+	else if (dbg&0x1) snprintf(text,lt,"dU %4.0f > %4.0f µm",dU,resCut);
+	if      (dbg&0x3) printf(" %s",text);
+	if      (dbg&0x4) snprintf(text,lt,"dV %5.0f > %4.0f mm %5.0f mm",
+				   dV/1000,dMx/1000,Vr);
+	else if (dbg&0x8) snprintf(text,lt,"dU %5.0f > %4.0f mm %5.0f mm",
+				   dU/1000,dMx/1000,Ur);
+	if      (dbg&0xc) printf(" %s",text);
+	if      (dbg&0xf) printf("\n");
       }
     }
   }
-  else if (doPrint) printf("\n");
   return true;
 }
 unsigned int recoEvents::isOnEdge(int idet, unsigned long cellID,
@@ -411,8 +430,8 @@ unsigned int recoEvents::isOnEdge(int idet, unsigned long cellID,
       if (strip==0) {
 	int section = module/8; int staveType = (section==1 || section==2)?0:1;
 	double radius = radii[0][staveType];    
-	double hWidth = hWidths[0][staveType], phiPitch = pitches[0][0]/radius/1000;
-	if (phil<-hWidth+phiPitch/2 || phil>hWidth+phiPitch/2)
+	double hWidth = hWidths[0][staveType], phiPitch = pitches[0][staveType]/radius;
+	if (phil<-hWidth+phiPitch/2 || phil>hWidth-phiPitch/2)
 	  onEdge |= 0x1<<strip;
       }
       else {
@@ -1056,20 +1075,24 @@ void recoEvents::initDetEvent()
   modulesLP = 0; moduleLP = 0;
   modulesLP1 = 0; // In addition, single hit
   // debugging
-  doDebug = 0;
+  doDebug = 0; debuggedDet = -1;
 }
 void recoEvents::requestDebug(int idet, unsigned int level)
 {
   if ((verbose&level<<idet) || evtNum==evtToDebug) {
     doDebug |= level; // Set debug ON
-    if (!(doDebug&0x20000)) { // No header yet
-      printf("Evt #%5d det %d\n",evtNum,idet); doDebug |= 0x20000;
-    }
+    debuggedDet = idet;
   }
 }
 bool recoEvents::debugIsOn(unsigned int level)
 {
-  return doDebug&level;
+  if (doDebug&level) {
+    if (!(doDebug&0x20000)) { // No header yet
+      printf("Evt #%5d det %d\n",evtNum,debuggedDet); doDebug |= 0x20000;
+    }
+    return true;
+  }
+  return false;
 }
 void recoEvents::updateDetEvent(int idet, int ih)
 {
@@ -1270,12 +1293,12 @@ bool recoEvents::extendHit(int idet, int ih, int direction, double *gext)
     double lend[3];
     unsigned int status =
       cExtension(lpos,lmom,rT,pm*direction,dZ,startPhi,endPhi,lend);
-    if (!(status&0x1)) {
-      printf("#%5d: extendHit(%d,%d(0x%08lx,0x%08lx)) %.4f-(%d)->%.4f inconsistency: 0x%x\n",
-	     evtNum,idet,ih,cID&0xffffffff,cID>>32,Rr,pm*direction,rT,status);
+    if (debugIsOn(0x100) && !(status&0x1)) {
+      // Extension may fail altogether in the cylindrical geometry.
+      printf(" extendHit(%d,%d(0x%08lx,0x%08lx)) %.4f-(%d)->%.4f: 0x%x\n",
+	     idet,ih,cID&0xffffffff,cID>>32,Rr,pm*direction,rT,status);
       printf("%.2f,%.2f(%.4f),%.2f mm %.4f,%.4f,%.4f GeV\n",
 	     Xr,Yr,Rr,Zr,lmom[0],lmom[1],lmom[2]);
-      return false;
     }
     else {
       double gend[3]; l2gCyMBaL(lend,div,gend);
@@ -1340,8 +1363,10 @@ unsigned int cExtension(double const* lpos, double const* lmom, // Input subHit
       double t = (My * Ux - Mx * Uy) / D;
       if (t * direction < 0)
         continue;
-      double Ex = Mx + t * Px, Ey = My + t * Py, rE = sqrt(Ex * Ex + Ey * Ey), Ez = Mz + t * Pz;
-      if (rLow < rE && rE < rUp && fabs(Ez) < dZ) {
+      double Ex = Mx + t * Px, Ey = My + t * Py, Ez = Mz + t * Pz;
+      double rE = sqrt(Ex * Ex + Ey * Ey), phiE = atan2(Ey,Ex);
+      // Note: have to discard the phi+pi solution.
+      if (rLow < rE && rE < rUp && fabs(Ez) < dZ && fabs(phiE-phi) < 1) {
         status |= 0x1;
         tF = t;
       }
@@ -1532,7 +1557,7 @@ void recoEvents::DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
       
       printf("SimHit 0x%08lx,0x%08lx\n",cID&0xffffffff,cID>>32);
       printf("double lpos[3] = {%.6f,%.6f,%.6f};\n",
-	     lpos[0]/10,lpos[1]/10,lpos[2]/10);
+	     lpos[0],lpos[1],lpos[2]);
       printf("double lmom[3] = {%.6f,%.6f,%.6f};\n",lmom[0],lmom[1],lmom[2]);
       printf("double path = %.6f;\n",hit.pathLength/10);
       printf("double pars[5] = {%.5f,%.5f,%.5f,%.5f,%.5f};\n",
@@ -1568,7 +1593,7 @@ void recoEvents::DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
       printf("gmom %.6f,%.6f,%.6f\n",Px,Py,Pz);
 
       printf("double lpos[3] = {%.6f,%.6f,%.6f};\n",
-	     lpos[0]/10,lpos[1]/10,lpos[2]/10);
+	     lpos[0],lpos[1],lpos[2]);
       printf("double lmom[3] = {%.6f,%.6f,%.6f};\n",lmom[0],lmom[1],lmom[2]);
       printf("double path = %.6f;\n",hit.pathLength/10);
       printf("double pars[5] = {%.5f,%.5f,%.5f,%.5f,%.5f};\n",
