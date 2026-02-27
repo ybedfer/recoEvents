@@ -315,6 +315,7 @@ void recoEvents::fillHit(int simOrRec, int idet,
 }
 bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim, unsigned long cellID)
 {
+  // Returns false if edge requirement not fulfilled.
   // Debugging
   requestDebug(idet,0x1000);
   // Determine residuals: pos-psim

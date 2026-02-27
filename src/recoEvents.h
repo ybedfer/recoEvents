@@ -822,11 +822,11 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	snprintf(hT,lT,"%s;Rd#scale[1.2]{#varphi}r  #font[22]{(#mum)}   ",dN);
 	rs.Rphir = new TH1D(hN,hT,512,-dx,dx); 
       }
-      TH1D *r1s[] =          {rs.X, rs.Y,rs.Rr,rs.Z,rs.phi,
+      TH1D *r1s[] =          {rs.X, rs.Y,rs.Z,rs.phi,
 			      rs.Rr,         // MPGD specific
 			      rs.Rphir,      // CyMBaL specific
 			      rs.Ur,rs.Vr};  // Outer specific
-      unsigned int flags[] = { 0xf,  0xf,  0xf, 0xf,   0xf,
+      unsigned int flags[] = { 0xf,  0xf, 0xf,   0xf,
 			       0x3,
 			       0x1,
 			       0x2,  0x2};
