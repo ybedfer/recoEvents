@@ -15,9 +15,11 @@ red { color: #d02; font-family: monospace}
    - [Subvolumes](#subvolumes)
    - [Instantiate a second recoEvents object:](#instantiate-a-second-recoevents-object)
    - [ROOT file system](#root-file-system)
-   
+   - [Examples](#examples)
+
 ### Installation
 ```
+eic-shell
 mkdir build; mkdir install; cd build
 cmake -DCMAKE_INSTALL_PREFIX=../install -DCMAKE_BUILD_TYPE=Debug ..
 make
@@ -49,11 +51,11 @@ ana.Loop();
 `ana.DrawphithZR(0,0x1);`&nbsp;&nbsp;&nbsp; <red>// TCanvas of SimHits of 0x1:CyMBaL...</red><BR>
 `ana.DrawphithZR(0,0x1,1);` <red>// ...same w/ some decorations</red><BR>
 `ana.DrawphithZR(0,0x2,1);` <red>// ...same for SimHits of 0x2:Outer</red><BR>
-`ana.DrawResiduals(0x1);`&nbsp;&nbsp;&nbsp; <red>// TCanvas of various residuals for 0x1:CyMBaL</red>
+`ana.DrawResiduals(0x1);`&nbsp;&nbsp;&nbsp; <red>// (RecHit-SimHit) residuals for 0x1:CyMBaL</red>
 
 `new TCanvas("c2D");`<BR>
-`ana.recHs[0].XY->Draw();`  <red>// Draw Y vs. X for Rec hits for [0]:CyMBal</red><BR>
-`ana.simHs[2].ZR->Draw();`  <red>// Draw R vs. Z for Sim hits for [2]:Vertex</red>
+`ana.recHs[0].XY->Draw();`  <red>// Draw Y vs. X for RecHits of [0]:CyMBal</red><BR>
+`ana.simHs[4].ZR->Draw();`  <red>// Draw R vs. Z for SimHits of [4]:Vertex</red>
 
 #### Event control, debugging:
 
@@ -79,6 +81,55 @@ recoEvents ana2(event2,0x1);
 
 #### ROOT file system:
  Histos can also be accessed and listed from the ROOT file system.
+
+#### Examples
+
+ - SimHits
+   - Generation
+   ```
+   npsim --steeringFile examples/steeringFile.py --compactFile $DETECTOR_PATH/epic_craterlake_tracking_only.xml \\
+     -G -v ERROR -N $num --random.seed 1234 -O edm4hep.example.1234.root
+   
+   ```
+   - Projection
+   ```
+ .L ~/eic/recoEvents/install/librecoEvents.so 
+ TFile *_file0 = TFile::Open("edm4hep.example.1234.root")
+ TTree *t = (TTree*)gDirectory->Get("events");
+ recoEvents ana1(t,0x3f,0x3);
+ ana1.Loop();
+ ana1.DrawphithZR(0,0x4,0x1d,true);
+   ```
+ <img src="examples/cBECT.png" alt="BECT SimHits" width="600" height="400">
+
+ - (RecHits-SimHits) Residuals
+   - Generation
+   ```
+   eicrecon -Peicrecon:LogLevel=error -Pjana:nevents=16000 -PMPGD:SiFactoryPattern=0x0 \\
+     -Ppodio:output_file=podio.example.1234.root edm4hep.example.1234.root
+   ```
+   - Projection
+   
+   Residuals (RecHits-SimHits), for isolated muons, highlighting edges in red.
+
+   ```
+   TFile *_file1 = TFile::Open("podio.example.1234.root")
+   TTree *t = (TTree*)gDirectory->Get("events");
+   recoEvents ana2(t,0x3f,0x3), *ana = ana2;
+   ana->requirePDG = 13; ana->requireQuality = 2;
+   ana->Loop();
+   recoEvents ana3(t,0x3f,0x3), *ana = &ana3;
+   ana->requirePDG = 13; ana->requireQuality = 2;
+   ana3.requireOffEdge = -1;
+   ana->Loop();
+   ana = &ana2;
+   ana->DrawResiduals(1,0x1,0x6)
+   ana->DrawResiduals(2,0x1,0x6,cCyMBaL1Res,3)
+   ana = &ana3
+   ana->DrawResiduals(1,0x1,0x6,cCyMBaL1Res,1,2)
+   ana->DrawResiduals(2,0x1,0x6,cCyMBaL1Res,3,2)
+   ```
+ <img src="examples/cCyMBaL1Res.png" alt="CyMBaL (RecHits-SimHits) residuals" width="600" height="400">
 
 <br><br><br><br><br><br><br><br><br>
 ~~~~~~~~~~~~~~~~~~~~~

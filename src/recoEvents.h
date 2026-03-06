@@ -1042,14 +1042,17 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
     // ***** LOOP ON (selected subset of) HISTOS
     TH2D *h2s[5] = { hs.phi,hs.th,hs.Z,hs.R,hs.eDep};
     unsigned int flags[5] = // 0x1: OptStat = 1110, 0x2: Logx, 0x4: Logy
-      /* */        {      0,    0,   0, 0x4,    0x3};
+      /* */        {      0,    0, 0x8, 0x4,    0x3};
     if (idet<2) h2s[3] = hs.Rr;
     int ih, jh; for (ih=jh = 0; ih<5 && jh<4; ih++) {
       if (!(0x1<<ih&histoPattern)) continue;
       cEvents->cd(pad++);
       TH2D *h2 = h2s[ih];
       TH1D *hproj = h2->ProjectionX(); hproj->Draw();
-      if (flags[ih]&0x4) {
+      if      ((flags[ih]&0x4) &&  isBarrel(idet)) {
+	hproj->SetMinimum(1); gPad->SetLogy();
+      }
+      else if ((flags[ih]&0x8) && !isBarrel(idet)) {
 	hproj->SetMinimum(1); gPad->SetLogy();
       }
       else
