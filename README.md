@@ -92,16 +92,16 @@ recoEvents ana2(event2,0x1);
    
    ```
    - Projection
-   ```
+  ```
  .L ~/eic/recoEvents/install/librecoEvents.so 
  TFile *_file0 = TFile::Open("edm4hep.example.1234.root")
  TTree *t = (TTree*)gDirectory->Get("events");
  recoEvents ana1(t,0x3f,0x3);
  ana1.Loop();
  ana1.DrawphithZR(0,0x4,0x1d,true);
-   ```
- ![BECT SimHits](examples/cBECT.png "BECT SimHits")
- <!--- <img src="examples/cBECT.png" alt="BECT SimHits" width="600" height="400"> --->
+  ```
+ 
+ <img src="examples/cBECT.png" alt="BECT SimHits" width="600" height="400">
 
  - (RecHits-SimHits) Residuals
    - Generation
@@ -130,8 +130,8 @@ recoEvents ana2(event2,0x1);
    ana->DrawResiduals(1,0x1,0x6,cCyMBaL1Res,1,2)
    ana->DrawResiduals(2,0x1,0x6,cCyMBaL1Res,3,2)
    ```
- ![CyMBaL (RecHits-SimHits) residuals](examples/cCyMBaL1Res.png "CyMBaL (RecHits-SimHits) residuals")
- <!--- <img src="examples/cCyMBaL1Res.png" alt="CyMBaL (RecHits-SimHits) residuals" width="600" height="400"> --->
+ 
+ <img src="examples/cCyMBaL1Res.png" alt="CyMBaL (RecHits-SimHits) residuals" width="600" height="400">
 
 <br><br><br><br><br><br><br><br><br>
 ~~~~~~~~~~~~~~~~~~~~~
