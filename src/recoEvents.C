@@ -303,14 +303,26 @@ void recoEvents::fillHit(int simOrRec, int idet,
     g2lCyMBaL(X,Y,Z,div,Xr,Yr,Zr,Rr,phir);
     hs->phir->Fill(phir,div);
     hs->Rr->Fill(Rr,div);
-    hs->xyr->Fill(Rr*phir,Zr);
+    // Rphi: let's used fixed radius (set from geometry) instead hit radius, so
+    // as to keep Rphi range w/in detector width.
+    int section = module/8; int staveType = (section==1 || section==2)?0:1;
+    hs->xyr->Fill(Zr,radii[0][staveType]*phir);
   }
   else if (idet==1) { // Special Outer: fill Rcosphi, Ur, Vr
     double Rcdphi, Xr, Yr, Zr, Ur, Vr;
     g2lOuter(X,Y,Z,module,Rcdphi,Xr,Yr,Zr,Ur,Vr);
     hs->Rr->Fill(Rcdphi,div);
     hs->Ur->Fill(Ur,div); hs->Vr->Fill(Vr,div);
-    hs->xyr->Fill(Xr,Yr);
+    //#define DEBUG_xyrOUTLIERS
+#ifdef DEBUG_xyrOUTLIERS
+    // - If binning is taken exactly from knowledge of geometry, there are
+    //  under-/over-flows.
+    // - As of 2026/03, some margin is taken, see "recoEvents::getxyArgs".
+    if (simOrRec==0 && (fabs(Xr)>hWidths[1][0] || fabs(Yr)>ZHLengths[1]))
+      printf("=== %5d 0x%08lx,0x%08lx %.4f,%.4f,%.4f %.4f,%.4f,%.4f\n",
+	     evtNum,cellID&0xffffffff,cellID>>32,X,Y,Z,Xr,Yr,Zr);
+#endif
+    hs->xyr->Fill(Yr,Xr);
   }
 }
 bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim, unsigned long cellID)
@@ -585,33 +597,42 @@ void recoEvents::parseCellID(int idet, unsigned long ID,
 			    unsigned int &strip)
 {
   // ***** MODULE
-  // mpgd_barrel.xml:      <id>system:8,layer:4,module:12, ...
-  // mpgd_outerbarrel.xml: <id>system:8,layer:4,module:12, ...
-  // silicon_barrel.xml:   <id>system:8,layer:4,module:12, ...
-  // vertex_barrel.xml:    <id>system:8,layer:4,module:12, ...
-  // => All have same module specif.
+  // mpgd_barrel.xml:          <id>system:8,layer:4,module:12, ...
+  // mpgd_outerbarrel.xml:     <id>system:8,layer:4,module:12, ...
+  // mpgd_????ward_endcap.xml: <id>system:8,layer:2,module:6,
+  // silicon_barrel.xml:       <id>system:8,layer:4,module:12, ...
+  // vertex_barrel.xml:        <id>system:8,layer:4,module:12, ...
   // system: CyMBaL = 61, Outer = 64, ... (It's not checked that this is what we get in "ID")
-  module = (ID>>12)&0xfff;
+  module = (idet==2|| idet==3) ? ID>>10&0x3f : ID>>12&0xfff;
   // ***** divISION
   //       iRec = (strip coordinate: 0 = measurement coord, 1 = orthogonal
-  if      (idet==0) { // CyMBaL
+  if      (idet==0) {            // ***** CyMBaL
     //      <id>system:8,layer:4,module:12,sensor:30:2,phi:-16,z:-16</id>
     if (module>15) {
       // Forward sectors are rotated by phi
       int sector = module/8, iphi = module%8; module = 8*sector+(4+iphi)%8;
     }
     div = module;
-    strip = nSensitiveSurfaces==5 ? ID>>28&0xf : ID>>30&0x3;
+    strip = ID>>28&0xf;
   }
-  else if (idet==1) { // µRWELL
+  else if (idet==1) {            // ***** Outer
     div = module%2;      // "div" = parity
-    strip = nSensitiveSurfaces==5 ? ID>>28&0xf : ID>>30&0x3;
+    strip = ID>>28&0xf;
   }
-  else if (idet==2) {   // Vertex
-    int layer = (ID>>8)&0xf; // "div" = log_2(layer)
-    int bit; for (bit = 0, div = 3 /* unphysical default */; bit<=2; bit++) {
+  else if (idet==2||idet==3) {   // ***** ENDCAPs
+    int layer = (ID>>8)&0x3; // "div" = log_2(layer)
+    div = layer-1;
+    strip = 0; // Not relevant
+  }
+  else if (idet==4) {   // Vertex
+    int layer = ID>>8&0xf;
+    /*
+    // "div" = log_2(layer)
+    int bit; for (bit = 0, div = 3; bit<=2; bit++) { // unphysical default
       if ((0x1<<bit&layer)==layer) { div = bit; break; }
     }
+    */
+    div = layer;
     strip = 0; // Not relevant
   }
   else {
@@ -761,7 +782,7 @@ bool recoEvents::extrapolate(int idet, int ih, int jh)
     doPrint = (status==0x3) && requireQuality==2;
   }
   if (doPrint) {
-    printf("%d,%d dext %f\n",ih,jh,dext);
+    printf("%d,%d dext %f/%f\n",ih,jh,dext,dMx);
     printf("%2d: 0x%08lx 0x%08lx %.2f,%.2f,%.2f -> %.2f,%.2f,%.2f\n",
 	   ih,hit.cellID&0xffffffff,hit.cellID>>32,Mx,My,Mz,Ex,Ey,Ez);
     printf("%2d: 0x%08lx 0x%08lx %.2f,%.2f,%.2f -> %.2f,%.2f,%.2f\n",
@@ -945,7 +966,7 @@ void recoEvents::extend(int idet, int ih, SimTrackerHitData &hext)
   const Vector3f &mom = hit.momentum; double Px = mom.x, Py = mom.y, Pz = mom.z;
   double P = sqrt(Px*Px+Py*Py+Pz*Pz), Ex, Ey, Ez;
   requestDebug(idet,0x100);
-  bool doExtend = true; int direction = +1;
+  bool doExtend = false; int direction = +1;
   int subVolID = cID>>28&0xf; if (subVolID==0x3 || subVolID==0x4) {
     // Determine pathDepth (i.e. pathLength projected along depth axis)
     if (idet==0) {
@@ -1030,7 +1051,7 @@ void recoEvents::extend(int idet, int ih, SimTrackerHitData &hext)
 	     hit.cellID&0xffffffff,hit.cellID>>32,Mx,My,Mz,MZ);
       if (doExtend)
 	printf(" -> %.2f,%.2f,%.2f (%6.3f)",Ex,Ey,Ez,EZ);
-      printf(" mm\n");      
+      printf(" mm\n");
     }
   }
 }
@@ -1186,10 +1207,6 @@ void recoEvents::printHit(int idet,
     double Rcdphi, Xr, Yr, Ur, Vr, Zr; g2lOuter(X,Y,Z,module,Rcdphi,Xr,Yr,Zr,Ur,Vr);
     printf("%10s 0x%08lx,0x%08x X,Y,Z %7.2f,%7.2f,%8.2f Rr %7.3f U,V %7.2f,%7.2f mm\n",
 	   "",cellID&0xffffffff,cell,X,Y,Z,Rcdphi,Ur,Vr);
-  }
-  else {
-    printf("** recoEvents::printHit: Invalid det# = %d\n",idet);
-    exit(1);
   }
 }
 void recoEvents::debugRec(int idet, int ir)

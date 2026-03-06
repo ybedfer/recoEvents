@@ -4,6 +4,18 @@ red { color: #d02; font-family: monospace}
 
 ## recoEvents: Project the `events` TTree of the `podio_output` of `eicrecon`
 
+### Contents
+ - [Installation](#installation)
+ - [Usage](#usage)
+   - [Loading](#load-shared-lib)
+   - [Instantiate](#instantiate)
+   - [Loop on events](#loop-on-events)
+   - [Draw histos](#draw-histos)
+   - [Event control, debugging:](#event-control-debugging)
+   - [Subvolumes](#subvolumes)
+   - [Instantiate a second recoEvents object:](#instantiate-a-second-recoevents-object)
+   - [ROOT file system](#root-file-system)
+   
 ### Installation
 ```
 mkdir build; mkdir install; cd build
@@ -12,7 +24,8 @@ make
 make install
 ```
 
-### Usage, from the ROOT command line:
+### Usage
+ From the ROOT command line:
 
 #### Load shared lib:
 ```
@@ -24,7 +37,7 @@ make install
 `TTree *events = (TTree*)gDirectory->Get("events");`<BR>
 <red>`// Instantiate a recoEvents object w/ as arg.s:`</red><BR>
 <red>`// - pointer to events TTree`</red><BR>
-<red>`// - bit pattern: 0x1:CyMBaL, 0x2:Outer, 0x4:Vertex, 0x8:Si.`</red><BR>
+<red>`// - bit pattern: 0x1:CyMBaL, 0x2:Outer, 0x4: BECT, 0x8: FECT, 0x10:Vertex, 0x20:Si.`</red><BR>
 `recoEvents ana(events,0xf);`
 
 #### Loop on events:
@@ -50,12 +63,12 @@ ana.Loop();
 
 `ana.select = new TTreeFormula("select", "@MCParticles.size()==1", events);` <red>// Add rejection cut</red>
 
-#### 5-SUBVOLUME:
- - Is default. SimHits are coalesced alla MPGDTrackerDigi.
+#### Subvolumes:
+ - 5-SUBVOLUME is default. SimHits from MPGDs are coalesced alla MPGDTrackerDigi.
  - Enforce single-SUBVOLUIME:
 
-`recoEvents ana(events,0xf,0x0);` <red>// Instantiate w/ no strips (i.e. pixels) in CyMBaL and Outer</red><BR>
-`ana.nSensitiveSurfaces = 1;`&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <red>// Overwrite default.</red>
+`recoEvents ana(events,0xf,0x0);` <red>// Instantiate w/ no strips (_i.e._ w/ pixels) in CyMBaL and Outer</red><BR>
+`ana.SetNSensitiveSurfaces(1);` &nbsp;&nbsp; <red>// Overwrite default.</red>
 
 #### Instantiate a second recoEvents object:
 ```
@@ -64,6 +77,8 @@ TTree *event2 = (TTree*)gDirectory->Get("events");
 recoEvents ana2(event2,0x1);
 ```
 
-#### Histos can also be accessed and listed from the ROOT file system.
+#### ROOT file system:
+ Histos can also be accessed and listed from the ROOT file system.
 
-
+<br><br><br><br><br><br><br><br><br>
+~~~~~~~~~~~~~~~~~~~~~

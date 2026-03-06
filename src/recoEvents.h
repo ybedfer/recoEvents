@@ -22,7 +22,7 @@ ana.requireQuality = 2;     // Require primary (!=0) and reject primary w/ inter
 ana.verbose = 0x1111;       // Debugging printout (1 for CyMBaL, 2 for Outer...)
 // ***** 5-SUBVOLUME: is default. SimHits are coalesced alla MPGDTrackerDigi
 recoEvents ana(events,0xf,0x0); // Instantiate w/ no strips (i.e. pixels) in CyMBaL and Outer
-ana.nSensitiveSurfaces = 1; // Overwrite default.
+ana.SetNSensitiveSurfaces(1);   // Overwrite default.
 // ***** LOOP
 ana.Loop();                 // For debugging: "Loop(<nEvents>,<firstEvent>)"
 // ***** DRAW
@@ -136,22 +136,21 @@ public :
    unsigned int verbose;
 
    // ***** DETECTOR NAMES
-#define N_DETs 4
+#define N_DETs 6
    const char *detectorNames[N_DETs];
    // STRIP SEGMENTATION
    const char *coordNames[2][N_DETs];
-   // Depending upon setup, MPGDs can have more than one sensitive surfaces.
-   // Can be 1, 2 or 5.
-   int nSensitiveSurfaces;
+   void SetNSensitiveSurfaces(int nSurfaces);
    // GEOMETRY/CONFIGURATION
    // CyMBal: 4 sections * 8 staves, numbering from 0
-   unsigned int MPGDs;
-   bool isMPGD(int idet);
-   static constexpr int nModules[N_DETs] =  {32,24,128,68};
-   static constexpr int moduleMns[N_DETs] = { 0, 0,  1, 1};
+   unsigned int MPGDs, Barrels;
+   bool isMPGD(int idet), isBarrel(int idet);
+   static constexpr int nModules[N_DETs] =   {32,24,48,48,1920,70};
+   static constexpr int moduleMns[N_DETs] = { 0, 0, 1, 1,  1, 1};
    double volumeThicknesses[N_DETs];   // Overall thickness
    double radiatorThicknesses[N_DETs]; // Thickness of RADIATOR SUBVOLUME
    vector<double> radii[N_DETs];      // in mm
+   vector<double> ZAbscissae[N_DETs]; // in mm
    int nSections[N_DETs];
    vector<double> sectionDZs[N_DETs]; // Transform global -> local
    vector<double> hWidths[N_DETs];    // HalfWidths
@@ -173,7 +172,7 @@ public :
   
    // ********** HISTOS
    void BookHistos(Histos *Hs, const char *tag);
-   void getxyArgs(int idet, double &xMx, double &yMx, string &sT);
+   void getxyArgs(bool isRec, int idet, double &xMx, double &yMx, string &sT);
    unsigned int getStatus(int idet, int ih);
    unsigned int getStatus(int idet, int ih, map<int,int> &sim2coa);
    MCParticleData& getMCParticle(int idet, int ih);
@@ -227,7 +226,7 @@ public :
    static constexpr int jaune = kOrange+0, orange = kOrange+1, rouge  = kRed+0;
    static constexpr int marron = 50, gris   = 11;
    void DrawphithZR(int iSimRec = 0 /* 0: sim, 1: rec, 2: rec 2nd coord of STRIP */,
-		    unsigned int detectorPattern = 0xf, 
+		    unsigned int detectorPattern = 0x3f, 
 		    unsigned int histoPattern = 0xf, bool decompose = false,
 		    TCanvas *cPrv = 0, int ipad = 1, int col = -1);
    void DrawModules(int iSimRec = 0, unsigned int detectorPattern = 0x1, bool decompose = false);
@@ -271,8 +270,14 @@ public :
    virtual Bool_t   Notify();
    virtual void     Show(Long64_t entry = -1);
   
-   void initGeometry(unsigned int hasStrips);
-  
+   void initGeometry(int idet, bool hasStrips);
+
+   // ***** Data members not to be modified from command line:
+   // Depending upon setup, MPGDs can have more than one sensitive surfaces.
+   // - Can be =1 or =5.
+   // - But source code for =1 may not be up-to-date.
+   int nSensitiveSurfaces;
+
    ClassDef(recoEvents,1); // Must be the last item before the closing '};'
 };
 
@@ -289,17 +294,20 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
   requirePDG =     0; // Default: do not require any ID
   requireQuality = 0; // Default: do not require "SimTrackerHit::quality"
   requireOffEdge = 0; // Default: do not require off edge
+  stripMode = hasStrips;
+  requireTraversing = false; // Default = coalesce all extrapolate-compatible hits
+  // ***** GEOMETRY
+  MPGDs = 0xf;    // CyMBaL, Outer and Endcaps
   // Check that arg. "hasStrips" fits the pattern of MPGDs
-  unsigned int MPGDs = 0x3; // CyMBaL and Outer
   if ((hasStrips&MPGDs)!=hasStrips) {
     printf("** recoEvents: Invalid arg. <hasStrips>(=0x%x): does not fit pattern of MPGDs(=0x%x)! => Aborting...\n",
 	   hasStrips,MPGDs);
     return;
   }
-  stripMode = hasStrips;
-  requireTraversing = false; // Default = coalesce all extrapolate-compatible hits
-  // ***** GEOMETRY
-  initGeometry(hasStrips);
+  Barrels = 0x33; // CyMBaL, Outer and Vertex and Si
+  nSensitiveSurfaces = 5; // Default = 5. Can be changed via "SetNSensitiveSurfaces"
+  for (int idet = 0; idet<N_DETs; idet++)
+    initGeometry(idet,hasStrips&0x1<<idet);
   // ***** OBJECT ID
   iObjCreated = nObjCreated++;
   evtToDebug = -1;
@@ -347,13 +355,16 @@ void recoEvents::Init(TTree *tree)
    fChain = (TChain*)tree;
    fCurrent = -1;
    //fChain->SetMakeClass(1); // Leads to run time crash as soon as one act on mpgdHs
+   // Set margins, in order for recoEvents axis settings to work well
+   gStyle->SetPadBottomMargin(.15); gStyle->SetPadLeftMargin(.14);
 
    // ********** BRANCHES
    // ***** SIMHITS
    for (int idet = 0; idet<N_DETs; idet++) {
      if (!(0x1<<idet&processedDetectors)) continue;
      const char *branchNames[N_DETs] = {
-       "MPGDBarrel","OuterMPGDBarrel","VertexBarrel","SiBarrel"};
+       "MPGDBarrel","OuterMPGDBarrel","BackwardMPGDEndcap","ForwardMPGDEndcap",
+       "VertexBarrel","SiBarrel"};
      const char *branchName = branchNames[idet];
      string name(branchName); name += string("Hits");
      fChain->SetBranchAddress(name.c_str(),&hits[idet],&simBranches[idet]);
@@ -362,7 +373,8 @@ void recoEvents::Init(TTree *tree)
    for (int idet = 0; idet<N_DETs; idet++) {
      if (!(0x1<<idet&processedDetectors)) continue;
      const char *branchNames[N_DETs] = {
-       "_MPGDBarrel","_OuterMPGDBarrel","_VertexBarrel","_SiBarrel"};
+       "_MPGDBarrel","_OuterMPGDBarrel","_BackwardMPGDEndcap","_ForwardMPGDEndcap",
+       "_VertexBarrel","_SiBarrel"};
      const char *branchName = branchNames[idet];
      //#define MCPARTICLE
 #ifdef MCPARTICLE
@@ -377,7 +389,8 @@ void recoEvents::Init(TTree *tree)
    unsigned int recBranchPat = 0; for (int idet = 0; idet<N_DETs; idet++) {
      if (!(0x1<<idet&processedDetectors)) continue;
      const char *branchNames[N_DETs] = {
-       "MPGDBarrel","OuterMPGDBarrel","SiBarrelVertex","SiBarrelTracker"};
+       "MPGDBarrel","OuterMPGDBarrel","BackwardMPGDEndcap","ForwardMPGDEndcap",
+       "SiBarrelVertex","SiBarrelTracker"};
      const char *branchName = branchNames[idet];
      string name(branchName); name += string("RecHits");
      if (fChain->GetBranch(name.c_str())) recBranchPat |= 0x1<<idet;
@@ -400,7 +413,8 @@ void recoEvents::Init(TTree *tree)
      // ********** RECHITS
      for (int idet = 0; idet<N_DETs; idet++) {
        const char *branchNames[N_DETs] = {
-	 "MPGDBarrel","OuterMPGDBarrel","SiBarrelVertex","SiBarrelTracker"};
+	 "MPGDBarrel","OuterMPGDBarrel","BackwardMPGDEndcap","ForwardMPGDEndcap",
+	 "SiBarrelVertex","SiBarrelTracker"};
        const char *branchName = branchNames[idet];
        string name(branchName); name += string("RecHits");
        fChain->SetBranchAddress(name.c_str(),&recs[idet],&recBranches[idet]);
@@ -408,7 +422,8 @@ void recoEvents::Init(TTree *tree)
      // ***** RAWHITS <-> SIMHITS ASSOCIATION
      for (int idet = 0; idet<N_DETs; idet++) {
        const char *branchNames[N_DETs] = {
-	 "_MPGDBarrel","_OuterMPGDBarrel","_SiBarrelVertex","_SiBarrel"};
+	 "_MPGDBarrel","_OuterMPGDBarrel","_BackwardMPGDEndcap","_ForwardMPGDEndcap",
+	 "_SiBarrelVertex","_SiBarrel"};
        const char *branchName = branchNames[idet];
        string namr(branchName); namr += string("RawHitAssociations_rawHit");
        string nams(branchName); nams += string("RawHitAssociations_simHit");
@@ -418,7 +433,8 @@ void recoEvents::Init(TTree *tree)
      // ***** RAWHIT   -> RECHIT  ASSOCIATION
      for (int idet = 0; idet<N_DETs; idet++) {
        const char *branchNames[N_DETs] = {
-	 "_MPGDBarrel","_OuterMPGDBarrel","_SiBarrelVertex","_SiBarrelTracker"};
+	 "_MPGDBarrel","_OuterMPGDBarrel","_BackwardMPGDEndcap","_ForwardMPGDEndcap",
+	 "_SiBarrelVertex","_SiBarrelTracker"};
        const char *branchName = branchNames[idet];
        string namR(branchName); namR += string("RecHits_rawHit");
        fChain->SetBranchAddress(namR.c_str(),&aRhs[idet],&aRhBranches[idet]);
@@ -430,7 +446,7 @@ void recoEvents::Init(TTree *tree)
    Notify();
 
    // ***** DETECTOR NAMES
-   const char *detNs[N_DETs] = {"CyMBaL","Outer","Vertex","Si"};
+   const char *detNs[N_DETs] = {"CyMBaL","Outer","BECT","FECT","Vertex","Si"};
    const char *coordNs[2][2] = {{"#scale[1.2]{#varphi}","#font[32]{Z}"},
 				{"#font[32]{U}","#font[32]{V}"}};
    // ***** STRIPS
@@ -468,26 +484,26 @@ void recoEvents::Init(TTree *tree)
    }
 }
 // ********** GEOMETRY
-void recoEvents::initGeometry(unsigned int hasStrips)
+void recoEvents::initGeometry(int idet, bool hasStrips)
 {
-  MPGDs = 0x3;
-  for (int idet = 0; idet<N_DETs; idet++) {
-    volumeThicknesses[idet]=radiatorThicknesses[idet] = 0;
-  }
+  volumeThicknesses[idet]=radiatorThicknesses[idet] = 0;
   if (!hasStrips) {
-    nSensitiveSurfaces = 1;
-    volumeThicknesses[0] =   3; volumeThicknesses[2] =   3;
-    radiatorThicknesses[0] = 0; radiatorThicknesses[2] = 0;
+    volumeThicknesses[idet] = 3 /* 3mm thickness */;
+    radiatorThicknesses[idet] = 0;
   }
-  else {
-    nSensitiveSurfaces = 5;
+  else if (isMPGD(idet)) {
     const double volThickness = 3;           // 3mm thickness
-    volumeThicknesses[0]=volumeThicknesses[1]     = volThickness;
+    volumeThicknesses[idet] = 3 /* 3mm thickness */;
     const double radThickness = (3-3*.01)/2; // 3mm thickness-3*HELPER SUBVOLUMES
-    radiatorThicknesses[0]=radiatorThicknesses[1] = radThickness;
-    // CyMBaL = 2 radii, 4 sections
-    radii[0].push_back(556.755); radii[0].push_back(578.755);
+    radiatorThicknesses[idet] = radThickness;
+  }
+  if (idet==0) {                         // ***** CyMBaL = 2 radii, 4 sections
     const int nSs = 4; nSections[0] = nSs;
+    radii[0].push_back(556.755); radii[0].push_back(578.755);
+    // <constant name="InnerMPGDBarrel_zmin"            value="1025*mm"/> <comment> negative z </comment>
+    // <constant name="InnerMPGDBarrel_zmax"            value="1450*mm"/> <comment> positive z </comment>
+    // <constant name="MMOutwardFrameWidth"                    value="5.0*cm"/>
+    ZAbscissae[0].push_back(-1025+50); ZAbscissae[0].push_back(1450-50);
     double dZs[nSs] = {670.0,103.5,-528.5,-1095.0}; // mm
     for (int section = 0; section<nSs; section++)
       sectionDZs[0].push_back(dZs[section]);
@@ -503,25 +519,76 @@ void recoEvents::initGeometry(unsigned int hasStrips)
     //<constant name="MMnStripsZ"      value = "512" />
     int nStripsPhi = 512; pitches[0].push_back(2*hwidth/nStripsPhi);
     int nStripsZ =   512; pitches[0].push_back(2*ZHLengths[0]/nStripsZ);
-    // Outer
+  }
+  else if (idet==1) {                    // ***** OUTER
     radii[1].push_back(737.4650);
+    // <constant name="MPGDOuterBarrelModule_zmin1"     value="1795*mm"/>
+    // <constant name="MPGDOuterBarrelModule_zmin2"     value="1845*mm"/>
+    // <constant name="MPGDOuterBarrelModule_PCB_offset"              value="110*mm"/>
+    // <constant name="MPGDOuterBarrelFrame_width"            value="15*mm"/>
+    ZAbscissae[1].push_back(-1795+110+15); ZAbscissae[1].push_back(1845-110-15);
     sectionDZs[1].push_back(880); sectionDZs[1].push_back(-830);
-    hWidths[1].push_back(165);
+    // <constant name="MPGDOuterBarrelModule_width"                   value="360*mm"/>
+    hWidths[1].push_back(180-15);
     ZHLengths[1] = 840;
     //<constant name="MPGDOuterBarrelPitch"                        value = "800*um" />
     double outerPitch = 800; pitches[1].push_back(outerPitch/1000);
-    // MPGDs
-    //digi_cfg.gain                = 10000;
-    gains[0]=gains[1] = 10000;
-    gains[2]=gains[3] = 1;
+  }
+  else if (idet==2 || idet==3) {         // ***** ENDCAPS
+    // <constant name="BackwardMPGDMod1_rmin"         value="70.0*mm" />
+    // <constant name="BackwardMPGDMod1_rmax"         value="400.0*mm" />
+    radii[idet].push_back(70); radii[idet].push_back(400);
+    if (idet==2) {
+      // <constant name="BackwardMPGD_zmin"             value="1075.0*mm"/>
+      // <constant name="BackwardMPGDMod_offset"        value="125.0*mm"/>
+      ZAbscissae[2].push_back(-1075); ZAbscissae[2].push_back(-1075-125);
+    }
+    else {
+      // <constant name="ForwardMPGD_zmin"             value="1500.0*mm"/>
+      // <constant name="ForwardMPGDMod_offset"        value="125.0*mm"/>
+      ZAbscissae[3].push_back( 1500); ZAbscissae[3].push_back( 1500+125);
+    }
+    double f_rmin = 70, f_rmax = 400;
+    radii[3].push_back(f_rmin); radii[3].push_back(f_rmax);
+  }
+  else if (idet==4) {
+    // <constant name="VertexBarrel_rmin"               value="3.6*cm"/>
+    // <constant name="VertexBarrel_rmax"               value="12.6*cm"/>
+    radii[4].push_back(36); radii[4].push_back(126);
+    // <constant name="VertexBarrel_length"             value="26.6*cm"/>
+    // <constant name="RSU_length"  value="21.666*mm" />
+    // <constant name="VertexBarrelMod_length"   value="RSU_length/2" />
+    // <constant name="VertexBarrelLayer_nz"     value="12*2" />
+    // <constant name="VertexBarrelLayer_length" value="VertexBarrelMod_length*VertexBarrelLayer_nz" />
+    double hLength = 65/3.*12/2;
+    ZAbscissae[4].push_back(-hLength); ZAbscissae[4].push_back(+hLength);
+  }
+  else if (idet==5) {
+    // <constant name="SiBarrel1_rmin"                  value="25.9*cm"/>
+    // <constant name="SiBarrel2_rmin"                  value="41.4*cm"/>
+    radii[5].push_back(259); radii[5].push_back(414);
+    // <constant name="SiBarrelMod2_length" value="84*cm - 4.7*cm" /> <!--UPDATED from 84*cm to 84*cm - 4.7*cm = 79.3cm-->
+    ZAbscissae[5].push_back(-396.5); ZAbscissae[5].push_back(+396.5);    
+  }
+  // ***** GAINS, THRESHOLDS
+  if (isMPGD(idet)) {
+    if (idet==0 || idet==1) {
+      //digi_cfg.gain                = 10000;
+      gains[idet] = 10000;
+    }
+    else
+      gains[idet] = 1;
     // Thresholds on eDep
     //.threshold      = 100 * dd4hep::eV, in "MPGD.cc"
-    eDThresholds[0]=eDThresholds[1]= .1;
-    //.threshold = 0.54 * dd4hep::keV, in "BVTX.cc","BTRK.cc"
-    eDThresholds[2]=eDThresholds[3]= .54;
-    // Resolution? Same for all MPGDs
+    eDThresholds[idet] = .1;
     //digi_cfg.stripResolutions[0] = digi_cfg.stripResolutions[1] = 150 * dd4hep::um;
-    resolutions[0]=resolutions[1] = 150; // in µm
+    resolutions[idet] = 150; // in µm
+  }
+  else {
+    gains[idet] = 1;
+    //.threshold = 0.54 * dd4hep::keV, in "BVTX.cc","BTRK.cc"
+    eDThresholds[idet] = .54;
+    resolutions[idet] = 0; // Not yet set...
   }
 }
 // *************** HISTOS
@@ -573,63 +640,57 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     printf("\n");
     // *************** INSTANTIATE HISTOS
     // ***** SET HISTO RANGES 
-    double dX, dY, RAve, dR, ZMn, ZMx;
+    double dX, dY, dR, ZMn, ZMx, RMn, RMx;
     int nMods = nModules[idet], modMn = moduleMns[idet], nDivs, nLayers;
-    double dUr = 0;
-    if      (idet==0) { // ********** CyMBaL
+    double UMn, UMx; // Outer specific: U binning
+    double dRr = 0; // Endcap specific: R binning
+    if      (idet==0) {             // ********** CyMBaL
       dX=dY = 600;
-      RAve = (radii[0][0]+radii[0][1])/2; dR = 25;
-      // ***** Z RANGE: Let extrema of sensitive area fall on bin edge
-      // From: epic/compact/tracking/definitions_craterlake.xml
-      //<constant name="InnerMPGDBarrel_zmin"            value="105*cm"/> <comment> negative z </comment>
-      //<constant name="InnerMPGDBarrel_zmax"            value="143*cm"/> <comment> positive z </comment>
-      // From: epic/compact/tracking/mpgd_barrel.xml
-      //<constant name="MMOutwardFrameWidth"                    value="5.0*cm"/>
-      ZMn = -1000; ZMx = 1380;
+      double RAve = (radii[0][0]+radii[0][1])/2, deltaR = 25;
+      RMn = RAve-deltaR; RMx = RAve+deltaR;
+      ZMn = ZAbscissae[0][0]; ZMx = ZAbscissae[0][1];
       nDivs = nMods;
       nLayers = 1;
     }
-    else if (idet==1) { // ********** µRWELL
+    else if (idet==1) {             // ********** µRWELL
       dX=dY = 800;
-      RAve = radii[1][0]; dR = 20;
-      // <constant name="MPGDOuterBarrelModule_zmin1"     value="164.5*cm"/>
-      // <constant name="MPGDOuterBarrelModule_zmin2"     value="174.5*cm"/>
-      ZMn = -1645; ZMx = 1745;
-      //<constant name="MPGDOuterBarrelModule_length"                  value="0.5*(MPGDOuterBarrelModule_zmin1 + MPGDOuterBarrelModule_zmin2 + MPGDOuterBarrelModule_zoverlap)"/>
-      //<constant name="MPGDOuterBarrelModule_zoverlap"                value="0*MPGDOuterBarrelFrame_width"/>
-      double zmin1 = 1640.5, zmin2 = 1740.5, modL = (zmin1+zmin2)/2;
-      // <constant name="MPGDOuterBarrelModule_width"                   value="36.0*cm"/>
-      double modW = 360;
-      // UR: 224 for core part + 2*16 bins on the edge to get possible stray hits
-      double dRangeUr = (modL+modW)*sqrt(2)/2;
-      double deltaUr = dRangeUr/224; dUr = dRangeUr+16*deltaUr;
+      double RAve = radii[1][0], deltaR = 20;
+      RMn = RAve-deltaR; RMx = RAve+deltaR;
+      ZMn = ZAbscissae[1][0]; ZMx = ZAbscissae[1][1];
+      double modHL = 2*ZHLengths[1], modHW = 2*hWidths[1][0];
+      // Ur: 224 for core part + 2*16 bins on the edge to get possible stray hits
+      double dRangeUr = (modHL+modHW)*sqrt(2)/2;
+      double deltaUr = dRangeUr/224; UMx = dRangeUr+16*deltaUr; UMn = -UMx;
       nDivs = 2;
       nLayers = nDivs;
     }
-    else if (idet==2) { // ********** VERTEX
-      dX=dY = 140;
-      // <constant name="VertexBarrel_rmin"               value="3.6*cm"/>
-      // <constant name="VertexBarrel_rmax"               value="12.6*cm"/>
-      RAve = 80; dR = 50;
-      // <constant name="VertexBarrel_length"             value="270.0*mm"/>
-      ZMn = -135; ZMx = 135;
-      nDivs = 3; // 3 layers
-      nLayers = nDivs;
-    }
-    else if (idet==3) { // ********** Si
-      dX=dY = 500;
-      // <constant name="SiBarrel1_rmin"                  value="27.0*cm"/>
-      // <constant name="SiBarrel2_rmin"                  value="42.0*cm"/>
-      RAve = 350; dR = 100;
-      // <comment> projective cone at 45 degree </comment>
-      // <constant name="SiBarrel_angle"                  value="TrackerPrimaryAngle"/>
-      ZMn = -500; ZMx = 500;
+    else if (idet==2 || idet==3) {  // ********** ENDCAPs
+      RMn = radii[idet][0]; RMx = radii[idet][1];
+      dX=dY = RMx*1.1;
+      double ZAve = (ZAbscissae[idet][0]+ZAbscissae[idet][1])/2;
+      double deltaZ = fabs(ZAbscissae[idet][1]-ZAbscissae[idet][0])/2;
+      deltaZ *= 1.2;
+      ZMn = ZAve-deltaZ; ZMx = ZAve+deltaZ;
       nDivs = 2;
+      nLayers = 2;
+    }
+    else if (idet==4 || idet==5) {  // ********** VERTEX, Si
+      double RAve = (radii[idet][0]+radii[idet][1])/2;
+      double deltaR = (radii[idet][1]-radii[idet][0])/2; deltaR *= 1.1;
+      RMn = RAve-deltaR; RMx = RAve+deltaR;      
+      dX=dY = RMx*1.1;
+      ZMn = ZAbscissae[idet][0]; ZMx = ZAbscissae[idet][1];
+      if (idet==4) nDivs = 3; // 3 layers
+      else         nDivs = 2;
       nLayers = nDivs;
     }
-    // Z: 224 for core part + 2*16 bins on the edge to get possible stray hits
-    double dZ = 16*(ZMx-ZMn)/224; ZMn -= dZ; ZMx += dZ;
-    double RAMx = 2*RAve, RMn = RAve-dR, RMx = RAve+dR;
+    // Z|R: 224 for core part + 2*16 bins on the edge to get possible stray hits
+    if (isBarrel(idet)) {
+      double deltaZ = 16*(ZMx-ZMn)/224; ZMn -= deltaZ; ZMx += deltaZ;
+    }
+    else {
+      double deltaR = 16*(RMx-RMn)/224; RMn -= deltaR; RMx += deltaR;
+    }      
     double divMn = -.5, divMx = nDivs-.5; 
     const double pi = TMath::Pi();
     char hN[] = "hthphi"; size_t lN = strlen(hN)+1;
@@ -663,10 +724,15 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       hs.Rr =  new TH2D(hN,hT,1024,RMn, RMx,nDivs,divMn,divMx);
       snprintf(hN,lN,"%s%s",tag,"Ur");
       snprintf(hT,lT,"%s;#font[32]{%c}r  #font[22]{(mm)}   ",dN,'U');
-      hs.Ur =  new TH2D(hN,hT,1024,-dUr,dUr,nDivs,divMn,divMx);
+      hs.Ur =  new TH2D(hN,hT,1024,UMn,UMx,nDivs,divMn,divMx);
       snprintf(hN,lN,"%s%s",tag,"Vr");
       snprintf(hT,lT,"%s;#font[32]{%c}r  #font[22]{(mm)}   ",dN,'V');
-      hs.Vr =  new TH2D(hN,hT,1024,-dUr,dUr,nDivs,divMn,divMx);
+      hs.Vr =  new TH2D(hN,hT,1024,UMn,UMx,nDivs,divMn,divMx);
+    }
+    else if (idet==2 || idet==3) {
+      snprintf(hN,lN,"%s%s",tag,"Rr");
+      snprintf(hT,lT,"%s;#font[32]{%c}r  #font[22]{(mm)}   ",dN,'R');
+      hs.Rr =  new TH2D(hN,hT,1024,RMn,RMx,nDivs,divMn,divMx);
     }
     snprintf(hN,lN,"%s%s",tag,"Z");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'Z');
@@ -704,10 +770,10 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 		   hs.Ur,hs.Vr,  // Outer specific
 		   hs.eDep};
     unsigned int flags[] =
-      /* */       { 0xf, 0xf, 0xf, 0xf,   0xf,  0xf,   0xf,
+      /* */       {0x3f,0x3f,0x3f,0x3f,  0x3f, 0x3f,  0x3f,
 		    0x3,
 		    0x2, 0x2,
-		    0xf};
+		    0x3f};
     int nh2s = sizeof(h2s)/sizeof(TH2D*);
     for (int ih = 0; ih<nh2s; ih++) {
       if (!(0x1<<idet&flags[ih])) continue;
@@ -722,9 +788,9 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     snprintf(hT,lT,";#font[32]{%c}  #font[22]{(mm)}   ",'Y');
     sT += string(hT); const char *hTXY = sT.c_str();
     hs.XY = new TH2D(hN,hTXY,256,-dX, dX,256,-dY,dY);
-    if (isMPGD(idet)) { // If MPGD: xyr = 2D in local coordinates
-      double xMx, yMx; string sT = string(dN); getxyArgs(idet,xMx,yMx,sT);
-      hs.xyr = new TH2D("hxyr",hTXY,256,-xMx,xMx,256,-yMx,yMx);
+    if (isMPGD(idet) && isBarrel(idet)) { // Barrel MPGD: xyr = 2D in local coordinates
+      double xMx, yMx; string sT = string(dN); getxyArgs(isRec,idet,xMx,yMx,sT);
+      hs.xyr = new TH2D("hxyr",sT.c_str(),256,-xMx,xMx,256,-yMx,yMx);
     }
     snprintf(hN,lN,"%s%s",tag,"ZR");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'Z');
@@ -741,7 +807,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     TH2D *H2s[] = {hs.XY,hs.ZR,hs.thphi,
       hs.xyr}; // MPGD specific
     int nH2s = sizeof(H2s)/sizeof(TH2D*);
-    if (!isMPGD(idet)) nH2s -= 1; // If !MPGD, cancel hs.XYr
+    if (!isMPGD(idet) || !isBarrel(idet)) nH2s -= 1; // If !BarrelMPGD, cancel hs.xyr
     for (int ih = 0; ih<nH2s; ih++) {
       setAxes(H2s[ih]->GetXaxis(),505,2); setAxes(H2s[ih]->GetYaxis(),505,2);
     }
@@ -755,12 +821,10 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       double dphi = 1.2; // in mrad
       if (0x1<<idet&stripMode) { // ***** STRIPS: UPDATE RANGES DEPENDING ON iStrip
 	if (idet==0) { // CyMBaL
-	  // From: epic/compact/tracking/mpgd_barrel.xml
-	  // <constant name="MMModuleLength"                         value="61.0*cm"/>
 	  // 256-16-16 bins for the core part, 2x32 bins outside 
 	  double modL = ZHLengths[0]*2, deltaZ = modL/192, dz_phi = modL/2+32*deltaZ;
 	  // For phi, X, etc... no way to have limit at bin edge, since we have
-	  // 2 distinct sensitive surface radii, viz. 55.6755 and 57.8755
+	  // 2 distinct sensitive surface radii.
 	  double dphi_Z = 2*pi/8/2; dphi_Z *= 1.20;
 	  double RsurfMx = radii[0][1], dx_Z = dphi_Z*RsurfMx;
 	  dz_phi *= 1000; dx_Z *= 1000; dphi_Z *= 1000; // mm -> µm, rad -> mrad
@@ -769,11 +833,8 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	  dd = sqrt(4*dx_Z*dx_Z+dz_phi*dz_phi);
 	}
 	else if (idet==1) { // Outer
-	  //<constant name="MPGDOuterBarrelModule_length"                  value="0.5*(MPGDOuterBarrelModule_zmin1 + MPGDOuterBarrelModule_zmin2 + MPGDOuterBarrelModule_zoverlap)"/>
-	  //<constant name="MPGDOuterBarrelModule_zoverlap"                value="0*MPGDOuterBarrelFrame_width"/>
-	  double zmin1 = 1640.5, zmin2 = 1740.5, modL = (zmin1+zmin2)/2;
-	  //<constant name="MPGDOuterBarrelModule_width"                   value="36.0*cm"/>
-	  double modW = 360;
+	  double modL = 2*ZHLengths[1];
+	  double modW = 2*hWidths[1][0];
 	  // 256-16-16 bins for the core part, 2x32 bins outside 
 	  double stripRange = sqrt(2)*(modW+modL)/2;
 	  double deltaUV = stripRange/192, dUV = stripRange/2+32*deltaUV;
@@ -784,8 +845,8 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	  dz = dx;
 	}
       }
-      if (idet==3) { // Si: Looks like it has a very fine resolution in phi
-	dphi = 0.08; 
+      if (idet==5) { // Si: Looks like it has a very fine resolution in phi
+	dphi = 0.08;
       }
       double dRr = 1600;
       snprintf(hN,lN,"%c%s",'d',"X");
@@ -822,11 +883,11 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	snprintf(hT,lT,"%s;Rd#scale[1.2]{#varphi}r  #font[22]{(#mum)}   ",dN);
 	rs.Rphir = new TH1D(hN,hT,512,-dx,dx); 
       }
-      TH1D *r1s[] =          {rs.X, rs.Y,rs.Z,rs.phi,
-			      rs.Rr,         // MPGD specific
+      TH1D *r1s[] =          {rs.X,rs.Y,rs.Z,rs.phi,
+			      rs.Rr,         // CyMBaL/Outer specific
 			      rs.Rphir,      // CyMBaL specific
 			      rs.Ur,rs.Vr};  // Outer specific
-      unsigned int flags[] = { 0xf,  0xf, 0xf,   0xf,
+      unsigned int flags[] = {0x3f,0x3f,0x3f,  0x3f,
 			       0x3,
 			       0x1,
 			       0x2,  0x2};
@@ -854,33 +915,58 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
   }
   dSave->cd();
 }
-void recoEvents::getxyArgs(int idet, double &xMx, double &yMx, string &sT)
+void recoEvents::getxyArgs(bool isRec, int idet, double &xMx, double &yMx, string &sT)
 {
- char hT[] =
-   ";#font[32]{R#phi}r  #font[22]{(mm)};#font[32]{Z}r  #font[22]{(mm)}   ";
- size_t lT = strlen(hT)+1;;
- if (idet==0) {
-   snprintf(hT,lT,";#font[32]{%s}r  #font[22]{(mm)}   ","R#phi");
-   sT += string(hT);
-   snprintf(hT,lT,";#font[32]{%s}r  #font[22]{(mm)}   ","Z");
-   sT += string(hT); const char *hTxy = sT.c_str();
-   // Innner and outer sections do not yield the exact same Rphi range
-   // Let's take the average
-   int io; for (io = 0, xMx = 0; io<2; io++)
-	     xMx += radii[idet][io]*hWidths[idet][io];
-   xMx /= 2;
- } else if (idet==1) {
-   snprintf(hT,lT,";#font[32]{%s}r  #font[22]{(mm)}   ","X");
-   sT += string(hT);
-   snprintf(hT,lT,";#font[32]{%s}r  #font[22]{(mm)}   ","Y");
-   sT += string(hT); const char *hTxy = sT.c_str();
-   xMx = hWidths[idet][0];
- }
- yMx = ZHLengths[idet];
+  char hT[] =
+    ";#font[32]{Z}r  #font[22]{(mm);#font[32]{R#varphi}r  #font[22]{(mm)}}   ";
+  size_t lT = strlen(hT)+1;;
+  if (idet==0) {
+    // Since TCanvas' tend to be wider along the horizontal awis, let's have Zr
+    // as abscissa and Rphir as ordinate.
+    snprintf(hT,lT,";#font[32]{%s}r  #font[22]{(mm)}   ","Z");
+    sT += string(hT);
+    snprintf(hT,lT,";R#font[32]{%s}r  #font[22]{(mm)}   ","#varphi");
+    sT += string(hT); const char *hTxy = sT.c_str();
+    // Innner and outer sections do not yield the exact same Rphi range
+    // Let's take the max
+    yMx = radii[0][0]*hWidths[0][0];
+    xMx = ZHLengths[idet];
+  } else if (idet==1) {
+    // Since TCanvas' tend to be wider along the horizontal awis, let's have Yr
+    // as abscissa and Xr as ordinate.
+    snprintf(hT,lT,";#font[32]{%s}r  #font[22]{(mm)}   ","Y");
+    sT += string(hT);
+    snprintf(hT,lT,";#font[32]{%s}r  #font[22]{(mm)}   ","X");
+    sT += string(hT); const char *hTxy = sT.c_str();
+    if (isRec) { // RecHits may lie outside detector's frame.
+      double modHL = ZHLengths[idet], modHW = hWidths[idet][0];
+      xMx = (modHW+modHL)/2; yMx = xMx;
+    }
+    else {
+      yMx = hWidths[idet][0]; xMx = ZHLengths[idet];     
+    }
+  }
+  // Add a 25µ margin to make for imprecisions
+  // - Don't know what they come from: l2g? extrapolation?
+  // - Turns out to be only needed form SimHits. Yet, in order to have same
+  //  binning for SimHits and RecHits...
+  xMx += .025; yMx += .025;
+}
+void recoEvents::SetNSensitiveSurfaces(int nSurfaces)
+{
+  if      (nSurfaces!=1 && nSurfaces!=5) {
+    printf("** SetNSensitiveSurfaces: Invalid arg.(=%d); should =1 or =5\n",
+	   nSurfaces);
+  }
+  else nSensitiveSurfaces = nSurfaces;
 }
 bool recoEvents::isMPGD(int idet)
 {
   return 0x1<<idet&MPGDs;
+}
+bool recoEvents::isBarrel(int idet)
+{
+  return 0x1<<idet&Barrels;
 }
 
 Bool_t recoEvents::Notify()
@@ -960,7 +1046,7 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
     if (idet<2) h2s[3] = hs.Rr;
     int ih, jh; for (ih=jh = 0; ih<5 && jh<4; ih++) {
       if (!(0x1<<ih&histoPattern)) continue;
-      cEvents->cd(pad++); gPad->SetBottomMargin(.15);
+      cEvents->cd(pad++);
       TH2D *h2 = h2s[ih];
       TH1D *hproj = h2->ProjectionX(); hproj->Draw();
       if (flags[ih]&0x4) {
@@ -1142,7 +1228,7 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
       if (!(0x1<<ih&histoPattern)) continue;
       TH1D *h1 = r1s[ih];
       if (col>=0) h1->SetLineColor(col);
-      cResids->cd(pad++); gPad->SetBottomMargin(.15);
+      cResids->cd(pad++);
       bool superImpose = false;
       if (cPrv) {
 	TList *l = gPad->GetListOfPrimitives(); TObject *o = l->First();
