@@ -130,7 +130,7 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	unsigned int status = getStatus(idet,ih,sim2coa);
 	debugHit(idet,ih,nCoaHs,hit,status);
 	// ***** MODULE SELECTION
-	if (!moduleSelection(hit.cellID)) continue;
+	if (!moduleSelection(idet,hit.cellID)) continue;
 	// ***** HIT SELECTION
 	if (status!=0x3) continue;
 	// ***** FILL sim HISTO
@@ -171,7 +171,7 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	      SimTrackerHitData &hit = coalescedHs[cIndex];
 	      debugHitRec(idet,is,(int)coas.size(),cIndex,hit,ir);
 	      // ***** MODULE SELECTION
-	      if (!moduleSelection(rec.cellID)) continue;
+	      if (!moduleSelection(idet,rec.cellID)) continue;
 	      // ***** HIT SELECTION
 	      unsigned int status = getStatus(idet,cIndex,sim2coa);
 	      if (status!=0x3) continue;
@@ -351,7 +351,7 @@ bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     double Xd, Yd, Zd, Rrr, phirr; g2lCyMBaL(Xr,Yr,Zr,div,Xd,Yd,Zd,Rrr,phir);
     double Xl, Yl, Zl, Rrs, phirs; g2lCyMBaL(Xs,Ys,Zs,div,Xl,Yl,Zl,Rrs,phis);
     double dRr = 1000*(Rrr-Rrs), dphir = 1000*(phir-phis);
-    rs.Rr->Fill(dRr);
+    rs.R->Fill(dRr);
     int section = module/8; int staveType = (section==1 || section==2)?0:1;
     double radius = radii[0][staveType];
     double Rdphi = radius*dphir; rs.Rphir->Fill(Rdphi);
@@ -395,7 +395,7 @@ bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     //printf("Rr,Rrs: %.2f,%.2f, Ur,Urs: %.2f,%.2f, Vr,Vrs: %.2f,%.2f\n",
     //	     Rcdphi,Rcdphis,Ur,Urs,Vr,Vrs);
     double dRcdphi = 1000*(Rcdphir-Rcdphis);
-    rs.Rr->Fill(dRcdphi);
+    rs.R->Fill(dRcdphi);
     double dU = 1000*(Ur-Us), dV = 1000*(Vr-Vs);
     rs.Ur->Fill(dU); rs.Vr->Fill(dV);
     //rs.xyr->Fill(Xrs,Yrs,strip?dUr:dVr);
@@ -426,6 +426,10 @@ bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
 	if      (dbg&0xf) printf("\n");
       }
     }
+  }
+  else {
+    double Rr = sqrt(Xr*Xr+Yr*Yr), Rs =  sqrt(Xs*Xs+Ys*Ys), dR = 1000*(Rr-Rs);
+    rs.R->Fill(dR);
   }
   return true;
 }
@@ -620,7 +624,7 @@ void recoEvents::parseCellID(int idet, unsigned long ID,
     strip = ID>>28&0xf;
   }
   else if (idet==2||idet==3) {   // ***** ENDCAPs
-    int layer = (ID>>8)&0x3; // "div" = log_2(layer)
+    int layer = ID>>8&0x3;
     div = layer-1;
     strip = 0; // Not relevant
   }
@@ -1091,11 +1095,12 @@ bool recoEvents::checkTraversing(int idet, SimTrackerHitData &hit,
 // ***** EVENT CONTROL, DEBUGGING
 void recoEvents::initDetEvent()
 {
-  prvPat = 0;
-  modPats = 0; // Module-pattern of all modules w/ hit
-  // Modules where LONE PRIMARIES and only that
-  modulesLP = 0; moduleLP = 0;
-  modulesLP1 = 0; // In addition, single hit
+  prvLayerModule.init();
+  allLayerModules.init(); // All (layer,module)'s w/ hit
+  // (Layer,module)'s where LONE PRIMARIES and only that
+  prvLayerModuleLP.init();
+  layerModulesLP.init();
+  layerModulesLP1.init(); // In addition, single LONE PRIMARY
   // debugging
   doDebug = 0; debuggedDet = -1;
 }
@@ -1120,45 +1125,48 @@ void recoEvents::updateDetEvent(int idet, int ih)
 {
   // LONE PRIMARY
   // - Is primary hit w/o secondary offsprings.
-  // - I.e. primary not followed by secondary.
+  // - I.e. primary not followed by any secondary.
   // - Identified by unbroken sequence of primary hits (in a broken sequence,
   //  some of the hits may be LONE PRIMARIES, but we're interested here in
   //  singling out modules where all hits are lone primaries).
   //   This, PROVIDED PRIMARY IS REQUIRED.
   SimTrackerHitData &hit = hits[idet]->at(ih);
-  int module = (hit.cellID>>12)&0xfff;
-  unsigned long modPat = ((unsigned long)0x1)<<module;
-  if (modPat!=prvPat) { // New module: update module-patterns w/ previous one
-    modulesLP |= moduleLP; modulesLP1 |= moduleLP;
+  LayerModules lm(idet,hit.cellID);
+  bool newModule = !prvLayerModule.contains(lm);
+  if (newModule) { // New module: account for previous one
+    layerModulesLP.add(prvLayerModuleLP);
+    layerModulesLP1.add(prvLayerModuleLP);
   }
-  if (prvPat&modPats)   // Already encountered module...
-    modulesLP1 &= ~prvPat; // ...Remove from module-pattern of SINGLE LONE PRIMARY
+  if (allLayerModules.contains(prvLayerModule))// Already encountered module...
+    layerModulesLP1.subtract(prvLayerModule); // ...Remove from module-pattern of SINGLE LONE PRIMARIES
   // LONE PRIMARY?
   unsigned int status = getStatus(idet,ih);
-  if (status&0x2) {
-    if (modPat!=prvPat) // New module has primary...
-      moduleLP = modPat;  // ...=> Set "moduleLP"
+  if (status&0x2) { // Primary
+    if (newModule)   // New module has primary...
+      prvLayerModuleLP = lm;  // ...=> Set "moduleLP"
   }
-  else                // Interfering secondary
-    moduleLP = 0;        // ...=> Reset "moduleLP"
-  modPats |= prvPat;
-  prvPat = modPat;
+  else              // Interfering secondary
+    prvLayerModuleLP.init();  // ...=> Reset "moduleLP"
+  allLayerModules.add(prvLayerModule);
+  prvLayerModule = lm;
 }
 void recoEvents::finaliseDetEvent()
 { // Last iteration: update module-patterns w/ last module
-  modulesLP |= moduleLP; modulesLP1 |= moduleLP;
-  if (prvPat&modPats) modulesLP1 &= ~prvPat;
+  layerModulesLP.add(prvLayerModuleLP);
+  layerModulesLP1.add(prvLayerModuleLP);
+  if (allLayerModules.contains(prvLayerModule))// Already encountered module...
+    layerModulesLP1.subtract(prvLayerModule);
+  allLayerModules.add(prvLayerModule);
 }
-bool recoEvents::moduleSelection(unsigned long cellID)
+bool recoEvents::moduleSelection(int idet, unsigned long cellID)
 {
-  int module = cellID>>12&0xfff;
-  unsigned long modPat = ((unsigned long)0x1)<<module;
-  if (requireModules && !(modPat&requireModules)) return false;
-  bool ok = true;
-  if (requireQuality) {
-    ok = modPat&modulesLP;
-    if (requireQuality>1) ok = modPat&modulesLP1;
-  }
+  LayerModules lm(idet,cellID);
+  if (requireModules && !requiredLayerModules[idet].contains(lm))
+    return false;
+  bool ok;
+  if      (requireQuality==1) ok = layerModulesLP.contains(lm);
+  else if (requireQuality>1)  ok = layerModulesLP1.contains(lm);
+  else                        ok = 1;
   return ok;
 }
 void recoEvents::debugHit(int idet, int ih, int nHs, SimTrackerHitData &hit, unsigned int status)

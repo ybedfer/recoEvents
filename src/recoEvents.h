@@ -93,10 +93,62 @@ using namespace edm4hep;
 
 typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *R, *phi, *phir, *th, *mod, *thphi, *XY, *ZR, *Rr, *xyr, *Ur, *Vr, *eDep; }
   Histos;
-typedef struct{ TDirectory *dir; TH1D *X, *Y, *Z, *phi, *Rr, *Rphir, *Ur, *Vr; /* TProfile2D *xyr; */}
+typedef struct{ TDirectory *dir; TH1D *X, *Y, *Z, *phi, *R, *Rphir, *Ur, *Vr; /* TProfile2D *xyr; */}
   Resids;
 
 void SetPaveText(TH1 *h, int mode = 0, int opt = 0);
+
+class LayerModules {
+  // Structure encoding layer# and module#
+  // (Note: substructures ("modulePat" and index into it) do not match exactly
+  // layer and module entities defined in IDDescriptor.) 
+public:
+  LayerModules() {
+    init();
+  };
+  LayerModules(int idet, unsigned long cellID) {
+    int num, index;
+    if        (idet==2|| idet==3) {
+      index = (cellID>>8&0x3)-1; num = cellID>>10&0x3f;
+    } else if (idet==0 || idet==1) {
+      index = 0;                 num = cellID>>12&0xfff;
+    } else if (idet==4) { // Vertex: 1920 modules (at most) => divide by 32
+      index = (cellID>>8&0xf);   num = cellID>>12&0xfff; num /= 32;
+    }
+    else if (idet==5) { // Si: 2 systemIDs: 0x3b and 0x3c; sublayer = module parity
+      /* */                      num = cellID>>12&0xfff;
+      index = (1-(cellID%2))*2 + num%2; num /= 2;
+    }
+    if (index>3 || num>63) {
+      printf("** LayerModules: Invalid args: idet,cellID = %d,0x%08lx,0x%08lx => index,num = %d,%d\n",
+	     idet,cellID&0xffffffff,cellID>>32,index,num);
+    }
+    for (int idx = 0; idx<4; idx++) {
+      if (idx==index) patterns[idx] = ((unsigned long)0x1)<<num;
+      else            patterns[idx] = 0;
+    }
+  }
+  void operator=(LayerModules &lm) {
+    for (int idx = 0; idx<4; idx++) patterns[idx] = lm.patterns[idx];
+  };
+  ~LayerModules() {};
+  void init() {
+    for (int idx = 0; idx<4; idx++) patterns[idx] = 0;
+  };
+  void add(LayerModules &lm) {
+    for (int idx = 0; idx<4; idx++) patterns[idx] |= lm.patterns[idx];
+  };
+  void subtract(LayerModules &lm) {
+    for (int idx = 0; idx<4; idx++) patterns[idx] &= ~lm.patterns[idx];
+  };
+  bool contains(LayerModules &lm) {
+    for (int idx = 0; idx<4; idx++) {
+      if (lm.patterns[idx]&patterns[idx]) return true;
+    }
+    return false;
+  };
+  unsigned long patterns[4];
+};
 
 class recoEvents: public TNamed {
 public :
@@ -122,11 +174,14 @@ public :
 		 unsigned int &module, unsigned int &div);
    // ***** EVENT CONTROL, DEBUGGING
    int evtNum; // Current event# (used to document error messages).
-   unsigned int prvPat;
-   unsigned long modPats; // Pattern of all modules where hit
-   // Modules where LONE PRIMARY, i.e. primary hit w/o secondary offsprings
-   unsigned long modulesLP, moduleLP;
-   unsigned long modulesLP1; // In addition, single hit
+  // (Layer,Module)
+   LayerModules prvLayerModule;
+   LayerModules allLayerModules; // Pattern of all (layer,module)'s where hit
+   // (Layer,module)'s where only LONE PRIMARIES, i.e. primary hits w/o secondary offsprings
+   LayerModules prvLayerModuleLP;
+   LayerModules layerModulesLP;  // All (layer,module)'s where only LPs
+   LayerModules layerModulesLP1; // where in addition single LP
+   // Debugging
    unsigned int doDebug; int debuggedDet; // Debug control
    int evtToDebug; // "evtNum" of event to be debugged
    // Verbosity:
@@ -163,11 +218,12 @@ public :
    // ***** EVENT SELECTION
    int requireNMCs;
    // ***** MODULE SELECTION
-   unsigned long requireModules;  // If >=0, select module "0x1<<module&requireModules" (D=0)
+   bool requireModules;
+   void AddRequiredLayerModules(int idet, int index, unsigned long pattern);
    // ***** HIT SELECTION
    // Requirements for filling "simHs" and residuals
    int requirePDG;     // Associated MCParticle 
-   int requireQuality; // "SimTrackerHit::quality". =1: reject secondary hits, >1: reject hit w/ secondary in same module
+   int requireQuality; // "SimTrackerHit::quality". =1: reject modules where any secondary hit, >1: reject modules where more than one hit
    int requireOffEdge; //  SimHit (or coalesced) not on edge
   
    // ********** HISTOS
@@ -213,7 +269,7 @@ public :
    bool debugIsOn(unsigned int level);
    void updateDetEvent(int idet, int ih);
    void finaliseDetEvent();
-   bool moduleSelection(unsigned long cellID);
+   bool moduleSelection(int idet, unsigned long cellID);
    void printHit(int idet,
 		 double X, double Y, double Z, unsigned long cellID);
    void debugHit(int idet, int ih, int nHs, SimTrackerHitData &hit, unsigned int status);
@@ -277,6 +333,8 @@ public :
    // - Can be =1 or =5.
    // - But source code for =1 may not be up-to-date.
    int nSensitiveSurfaces;
+   // ***** MODULE SELECTION
+   LayerModules requiredLayerModules[N_DETs];
 
    ClassDef(recoEvents,1); // Must be the last item before the closing '};'
 };
@@ -291,6 +349,7 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
   // ***** SELECTION
   requireNMCs =    0; // Default: no requirement
   requireModules = 0; // Default: all modules allowed
+  for (int idet = 0; idet<N_DETs; idet++) requiredLayerModules[idet].init();
   requirePDG =     0; // Default: do not require any ID
   requireQuality = 0; // Default: do not require "SimTrackerHit::quality"
   requireOffEdge = 0; // Default: do not require off edge
@@ -306,8 +365,10 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
   }
   Barrels = 0x33; // CyMBaL, Outer and Vertex and Si
   nSensitiveSurfaces = 5; // Default = 5. Can be changed via "SetNSensitiveSurfaces"
-  for (int idet = 0; idet<N_DETs; idet++)
+  for (int idet = 0; idet<N_DETs; idet++) {
+    if (!(0x1<<idet&processedDetectors)) continue;
     initGeometry(idet,hasStrips&0x1<<idet);
+  }
   // ***** OBJECT ID
   iObjCreated = nObjCreated++;
   evtToDebug = -1;
@@ -486,16 +547,22 @@ void recoEvents::Init(TTree *tree)
 // ********** GEOMETRY
 void recoEvents::initGeometry(int idet, bool hasStrips)
 {
-  volumeThicknesses[idet]=radiatorThicknesses[idet] = 0;
-  if (!hasStrips) {
-    volumeThicknesses[idet] = 3 /* 3mm thickness */;
-    radiatorThicknesses[idet] = 0;
+  radiatorThicknesses[idet] = 0;
+  if (isMPGD(idet)) {
+    //<constant name="BackwardMPGDDriftGap_thickness"           value="3.0*mm" />
+    volumeThicknesses[idet] = 3;
+    if (hasStrips) {
+      const double radThickness = (3-3*.01)/2; // 3mm thickness-3*HELPER SUBVOLUMES
+      radiatorThicknesses[idet] = radThickness;
+    }
   }
-  else if (isMPGD(idet)) {
-    const double volThickness = 3;           // 3mm thickness
-    volumeThicknesses[idet] = 3 /* 3mm thickness */;
-    const double radThickness = (3-3*.01)/2; // 3mm thickness-3*HELPER SUBVOLUMES
-    radiatorThicknesses[idet] = radThickness;
+  else if (idet==4) {
+    // <constant name="VertexBarrelMod_thickness" value="0.2*mm" />
+    volumeThicknesses[idet] = .04;
+  }
+  else if (idet==5) {
+    // <constant name="SiVertexSensor_thickness" value="40*um" />
+    volumeThicknesses[idet] = .04;
   }
   if (idet==0) {                         // ***** CyMBaL = 2 radii, 4 sections
     const int nSs = 4; nSections[0] = nSs;
@@ -534,7 +601,7 @@ void recoEvents::initGeometry(int idet, bool hasStrips)
     //<constant name="MPGDOuterBarrelPitch"                        value = "800*um" />
     double outerPitch = 800; pitches[1].push_back(outerPitch/1000);
   }
-  else if (idet==2 || idet==3) {         // ***** ENDCAPS
+  else if (idet==2 || idet==3) {         // ***** Endcaps
     // <constant name="BackwardMPGDMod1_rmin"         value="70.0*mm" />
     // <constant name="BackwardMPGDMod1_rmax"         value="400.0*mm" />
     radii[idet].push_back(70); radii[idet].push_back(400);
@@ -564,9 +631,9 @@ void recoEvents::initGeometry(int idet, bool hasStrips)
     ZAbscissae[4].push_back(-hLength); ZAbscissae[4].push_back(+hLength);
   }
   else if (idet==5) {
-    // <constant name="SiBarrel1_rmin"                  value="25.9*cm"/>
-    // <constant name="SiBarrel2_rmin"                  value="41.4*cm"/>
-    radii[5].push_back(259); radii[5].push_back(414);
+    // <constant name="SiBarrelMod1_rc" value="26.5*cm" /> <!-- 26.5 cm is the average radius for inner sub-layer of 262mm and outer of 267mm-->
+    // <constant name="SiBarrelMod2_rc" value="42*cm" /> <!-- 42 cm, inner/outer 417mm, 423mm -->
+    radii[5].push_back(265); radii[5].push_back(420);
     // <constant name="SiBarrelMod2_length" value="84*cm - 4.7*cm" /> <!--UPDATED from 84*cm to 84*cm - 4.7*cm = 79.3cm-->
     ZAbscissae[5].push_back(-396.5); ZAbscissae[5].push_back(+396.5);    
   }
@@ -664,7 +731,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       nDivs = 2;
       nLayers = nDivs;
     }
-    else if (idet==2 || idet==3) {  // ********** ENDCAPs
+    else if (idet==2 || idet==3) {  // ********** Endcaps
       RMn = radii[idet][0]; RMx = radii[idet][1];
       dX=dY = RMx*1.1;
       double ZAve = (ZAbscissae[idet][0]+ZAbscissae[idet][1])/2;
@@ -816,39 +883,55 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       int i01 = tag[1]=='0' ? 0 : 1;
       Resids &rs = resHs[i01][idet]; rs.dir = dSD;
       // ***** RANGES
-      double dx = idet<2 ? 608 /* All MPGDs */ : 24 /* Si */; // in µm
-      double dr = dx, dd = dx ,dz = dx, du = dx, dv = dx;
+      double dx, dy, dz, dr, du, dv; // in µm
       double dphi = 1.2; // in mrad
-      if (0x1<<idet&stripMode) { // ***** STRIPS: UPDATE RANGES DEPENDING ON iStrip
-	if (idet==0) { // CyMBaL
-	  // 256-16-16 bins for the core part, 2x32 bins outside 
-	  double modL = ZHLengths[0]*2, deltaZ = modL/192, dz_phi = modL/2+32*deltaZ;
-	  // For phi, X, etc... no way to have limit at bin edge, since we have
-	  // 2 distinct sensitive surface radii.
-	  double dphi_Z = 2*pi/8/2; dphi_Z *= 1.20;
-	  double RsurfMx = radii[0][1], dx_Z = dphi_Z*RsurfMx;
-	  dz_phi *= 1000; dx_Z *= 1000; dphi_Z *= 1000; // mm -> µm, rad -> mrad
-	  if (iStrip==1) dz = dz_phi;
-	  else { dphi = dphi_Z; dx = dx_Z; }
-	  dd = sqrt(4*dx_Z*dx_Z+dz_phi*dz_phi);
-	}
-	else if (idet==1) { // Outer
-	  double modL = 2*ZHLengths[1];
-	  double modW = 2*hWidths[1][0];
-	  // 256-16-16 bins for the core part, 2x32 bins outside 
-	  double stripRange = sqrt(2)*(modW+modL)/2;
-	  double deltaUV = stripRange/192, dUV = stripRange/2+32*deltaUV;
-	  dUV *= 1000;
-	  if (iStrip==1) dv = dUV;
-	  else           du = dUV;
-	  double deltaX = (modW+modL)/192; dx = modW/2+32*deltaX; dx *= 1000;
-	  dz = dx;
+      if (idet==0 || idet==1) {
+	dx = 608;
+	double thickness = volumeThicknesses[idet], deltaR = thickness/192;
+	dr = thickness/2+32*deltaR; dr *= 1000;
+	dz = dx; du = dx; dv = dx;
+	if (0x1<<idet&stripMode) { // ***** STRIPS: UPDATE RANGES DEPENDING ON iStrip
+	  if (idet==0) { // CyMBaL
+	    // 256-32-32 bins for the core part, 2x32 bins outside 
+	    double modL = ZHLengths[0]*2, deltaZ = modL/192, dz_phi = modL/2+32*deltaZ;
+	    // For phi, X, etc... no way to have limit at bin edge, since we have
+	    // 2 distinct sensitive surface radii.
+	    double dphi_Z = 2*pi/8/2; dphi_Z *= 1.20;
+	    double RsurfMx = radii[0][1], dx_Z = dphi_Z*RsurfMx;
+	    dz_phi *= 1000; dx_Z *= 1000; dphi_Z *= 1000; // mm -> µm, rad -> mrad
+	    if (iStrip==1) dz = dz_phi;
+	    else { dphi = dphi_Z; dx = dx_Z; }
+	  }
+	  else if (idet==1) { // Outer
+	    double modL = 2*ZHLengths[1];
+	    double modW = 2*hWidths[1][0];
+	    // 256-16-16 bins for the core part, 2x32 bins outside 
+	    double stripRange = sqrt(2)*(modW+modL)/2;
+	    double deltaUV = stripRange/192, dUV = stripRange/2+32*deltaUV;
+	    dUV *= 1000;
+	    if (iStrip==1) dv = dUV;
+	    else           du = dUV;
+	    double deltaX = (modW+modL)/192; dx = modW/2+32*deltaX; dx *= 1000;
+	    dz = dx;
+	  }
 	}
       }
-      if (idet==5) { // Si: Looks like it has a very fine resolution in phi
-	dphi = 0.08;
+      else if (idet==2 || idet==3) {
+	dx = 608;
+	double thickness = volumeThicknesses[idet], deltaZ = thickness/192;
+	dz = thickness/2+32*deltaZ; dz *= 1000;
+	dr = dx;
+	dphi = dx/radii[idet][0];
       }
-      double dRr = 1600;
+      else if (idet==4 || idet==5) {
+	dx = 25.6;
+	dz = dx;
+	double thickness = volumeThicknesses[idet], deltaR = thickness/192;
+	dr = thickness/2+32*deltaR; dr *= 1000;
+	// phi? empirical
+	if (idet==4) dphi = 0.5;
+	else         dphi = 0.08;
+      }
       snprintf(hN,lN,"%c%s",'d',"X");
       snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'X');
       rs.X =   new TH1D(hN,hT,256,-dx,dx);
@@ -856,21 +939,26 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'Y');
       rs.Y =   new TH1D(hN,hT,256,-dx,dx);
       if      (idet==0) { // If CyMBaL
-	snprintf(hN,lN,"%c%s",'d',"Rr");
+	snprintf(hN,lN,"%c%s",'d',"Rr"); // Rr = Reduced R
 	snprintf(hT,lT,"%s;d#font[32]{%c}r  #font[22]{(#mum)}   ",dN,'R');
-	rs.Rr =   new TH1D(hN,hT,256,-dRr,dRr);
+	rs.R =   new TH1D(hN,hT,256,-dr,dr);
       }
       else if (idet==1) { // If Outer
-	snprintf(hN,lN,"%c%s",'d',"Rr");
+	snprintf(hN,lN,"%c%s",'d',"Rr"); // Rr = Reduced R
 	snprintf(hT,lT,"%s;d#font[32]{%s}  #font[22]{(#mum)}   ",dN,
 		 "Rc#delta#scale[1.2]{#varphi}");
-	rs.Rr =   new TH1D(hN,hT,256,-dRr,dRr);
+	rs.R =   new TH1D(hN,hT,256,-dr,dr);
 	snprintf(hN,lN,"%c%s",'d',"Ur");
 	snprintf(hT,lT,"%s;d#font[32]{%c}r  #font[22]{(#mum)}   ",dN,'U');
 	rs.Ur =   new TH1D(hN,hT,256,-du,du);
 	snprintf(hN,lN,"%c%s",'d',"Vr");
 	snprintf(hT,lT,"%s;d#font[32]{%c}r  #font[22]{(#mum)}   ",dN,'V');
 	rs.Vr =   new TH1D(hN,hT,256,-dv,dv);
+      }
+      else {
+	snprintf(hN,lN,"%c%s",'d',"R");
+	snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'R');
+	rs.R =   new TH1D(hN,hT,256,-dr,dr);
       }
       snprintf(hN,lN,"%c%s",'d',"Z");
       snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'Z');
@@ -883,12 +971,10 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	snprintf(hT,lT,"%s;Rd#scale[1.2]{#varphi}r  #font[22]{(#mum)}   ",dN);
 	rs.Rphir = new TH1D(hN,hT,512,-dx,dx); 
       }
-      TH1D *r1s[] =          {rs.X,rs.Y,rs.Z,rs.phi,
-			      rs.Rr,         // CyMBaL/Outer specific
+      TH1D *r1s[] =          {rs.X,rs.Y,rs.Z,rs.phi,rs.R,
 			      rs.Rphir,      // CyMBaL specific
 			      rs.Ur,rs.Vr};  // Outer specific
-      unsigned int flags[] = {0x3f,0x3f,0x3f,  0x3f,
-			       0x3,
+      unsigned int flags[] = {0x3f,0x3f,0x3f,  0x3f,0x3f,
 			       0x1,
 			       0x2,  0x2};
       int nr1s = sizeof(r1s)/sizeof(TH1D*);
@@ -955,10 +1041,29 @@ void recoEvents::getxyArgs(bool isRec, int idet, double &xMx, double &yMx, strin
 void recoEvents::SetNSensitiveSurfaces(int nSurfaces)
 {
   if      (nSurfaces!=1 && nSurfaces!=5) {
-    printf("** SetNSensitiveSurfaces: Invalid arg.(=%d); should =1 or =5\n",
+    printf("** SetNSensitiveSurfaces: Invalid arg.(=%d); should be =1 or =5\n",
 	   nSurfaces);
   }
   else nSensitiveSurfaces = nSurfaces;
+}
+void recoEvents::AddRequiredLayerModules(int idet, int index, unsigned long pattern)
+{
+  // Input required (layer,module)'s
+  if (index<0 && index>3) {
+    printf("** AddResuiredLayerModules: Invalid <index> arg.(=%d); should be w/in [0,3]\n",
+	   index);
+  }
+  else {
+    requireModules = 1;
+    requiredLayerModules[idet].patterns[index] = pattern;
+    printf("requiredLayerModules[index(i.e. quasi-layer)]:");
+    for (int idx = 0; idx<4; idx++) {
+      if (requiredLayerModules[idet].patterns[idx])
+	printf(" [%d]: pattern = 0x%016lx",
+	       idx,requiredLayerModules[idet].patterns[idx]);
+    }
+    printf("\n");
+  }
 }
 bool recoEvents::isMPGD(int idet)
 {
@@ -1050,10 +1155,10 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
       TH2D *h2 = h2s[ih];
       TH1D *hproj = h2->ProjectionX(); hproj->Draw();
       if      ((flags[ih]&0x4) &&  isBarrel(idet)) {
-	hproj->SetMinimum(1); gPad->SetLogy();
+	hproj->SetMinimum(.5); gPad->SetLogy();
       }
       else if ((flags[ih]&0x8) && !isBarrel(idet)) {
-	hproj->SetMinimum(1); gPad->SetLogy();
+	hproj->SetMinimum(.5); gPad->SetLogy();
       }
       else
 	hproj->SetMinimum(0); // Useful for hs.phi
@@ -1215,16 +1320,16 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
     gStyle->SetStatFormat("6.3g");
     // ***** LOOP ON RESIDUALS (in subset)
     Resids &rs = resHs[strip][idet]; rs.dir->cd();
-    TH1D *r1s[4] = {rs.X, rs.Z, rs.phi, rs.Rr};
-    int printIntegral = 0; // Print Integral intead of Entries, to check for Under/Overflow
+    TH1D *r1s[4] = {rs.X, rs.Z, rs.phi, rs.R};
+    int printIntegral = -1; // Print Integral intead of Entries, to check for Under/Overflow
     if      (idet==0) { // CyMBaL: precision is on 'Rphir' or 'Z' alternatively,
       // depending upon strip's coord. 'Rr': let's check it's a Dirac.
-      r1s[2] = rs.Rphir;              r1s[3] = rs.Rr;
+      r1s[2] = rs.Rphir;
       printIntegral = iRec==1 ? 2 : 1; // Integral on Rphir/Z
     }
     else if (idet==1) { // Outer:  precision is on 'Ur' or 'Vr' alternatively,
       // depending upon strip's coord. 'Rr' = "Rcos(dphi)": check it's a Dirac. 
-      r1s[1] = rs.Ur; r1s[2] = rs.Vr; r1s[3] = rs.Rr;
+      r1s[1] = rs.Ur; r1s[2] = rs.Vr;
       printIntegral = iRec==1 ? 1 : 2; // Integral on Ur/Vr
     }
     for (int ih = 0; ih<4; ih++) {
@@ -1243,8 +1348,15 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
 	}
       }
       int optStat = ih==printIntegral ? 1001100 : 1110;
-      if (superImpose) { h1->Draw("sames"); SetPaveText(h1,1,optStat); }
-      else             { h1->Draw();        SetPaveText(h1,0,optStat); }
+      if (superImpose) {
+	h1->Draw("sames"); SetPaveText(h1,1,optStat); }
+      else             {
+	h1->Draw();        SetPaveText(h1,0,optStat);
+	if      (r1s[ih]==rs.R &&  isBarrel(idet) ||
+		 r1s[ih]==rs.Z && !isBarrel(idet)) {
+	  h1->SetMinimum(.5); gPad->SetLogy();
+	}
+      }
       //  Ndivisions policy: 505 -> 510, when Xaxis labels come close to the edge and collide w/ the Yaxis 0 label
       TAxis *ax = h1->GetXaxis();
       double xLabel = ax->GetXmax()/pow(10,int(log10(ax->GetXmax())));

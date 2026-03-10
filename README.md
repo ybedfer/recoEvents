@@ -60,7 +60,8 @@ ana.Loop();
 #### Event control, debugging:
 
 `ana.requirePDG = 13;`&nbsp;&nbsp;&nbsp;&nbsp; <red>// Require MCParticle = mu-</red><BR>
-`ana.requireQuality = 2;`                 <red>// !=0: Require primary. >1: In addition, reject hits w/ interfering secondary in same module.</red><BR>
+`ana.requireQuality = 1;`                 <red>// !=0: Require primary w/o any interfering secondary in same mdoule.</red><BR>
+`ana.requireQuality = 2;`                 <red>// !=0: In addition, require single hit.</red><BR>
 `ana.verbose = 0x1111;`&nbsp;&nbsp;&nbsp; <red>// Debugging printout (1 for CyMBaL, 2 for Outer...)</red>
 
 `ana.select = new TTreeFormula("select", "@MCParticles.size()==1", events);` <red>// Add rejection cut</red>
