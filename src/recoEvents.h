@@ -106,47 +106,13 @@ public:
   LayerModules() {
     init();
   };
-  LayerModules(int idet, unsigned long cellID) {
-    int num, index;
-    if        (idet==2|| idet==3) {
-      index = (cellID>>8&0x3)-1; num = cellID>>10&0x3f;
-    } else if (idet==0 || idet==1) {
-      index = 0;                 num = cellID>>12&0xfff;
-    } else if (idet==4) { // Vertex: 1920 modules (at most) => divide by 32
-      index = (cellID>>8&0xf);   num = cellID>>12&0xfff; num /= 32;
-    }
-    else if (idet==5) { // Si: 2 systemIDs: 0x3b and 0x3c; sublayer = module parity
-      /* */                      num = cellID>>12&0xfff;
-      index = (1-(cellID%2))*2 + num%2; num /= 2;
-    }
-    if (index>3 || num>63) {
-      printf("** LayerModules: Invalid args: idet,cellID = %d,0x%08lx,0x%08lx => index,num = %d,%d\n",
-	     idet,cellID&0xffffffff,cellID>>32,index,num);
-    }
-    for (int idx = 0; idx<4; idx++) {
-      if (idx==index) patterns[idx] = ((unsigned long)0x1)<<num;
-      else            patterns[idx] = 0;
-    }
-  }
-  void operator=(LayerModules &lm) {
-    for (int idx = 0; idx<4; idx++) patterns[idx] = lm.patterns[idx];
-  };
+  LayerModules(int idet, unsigned long cellID);
   ~LayerModules() {};
-  void init() {
-    for (int idx = 0; idx<4; idx++) patterns[idx] = 0;
-  };
-  void add(LayerModules &lm) {
-    for (int idx = 0; idx<4; idx++) patterns[idx] |= lm.patterns[idx];
-  };
-  void subtract(LayerModules &lm) {
-    for (int idx = 0; idx<4; idx++) patterns[idx] &= ~lm.patterns[idx];
-  };
-  bool contains(LayerModules &lm) {
-    for (int idx = 0; idx<4; idx++) {
-      if (lm.patterns[idx]&patterns[idx]) return true;
-    }
-    return false;
-  };
+  void operator=(LayerModules &lm);
+  void init();
+  void add(LayerModules &lm);
+  void subtract(LayerModules &lm);
+  bool contains(LayerModules &lm);
   unsigned long patterns[4];
 };
 
@@ -1417,6 +1383,47 @@ void recoEvents::SetMinima(double min)
     o = l->After(o);
   }
 }
+// ************************* LayerModules
+LayerModules::LayerModules(int idet, unsigned long cellID) {
+  int num, index;
+  if        (idet==2|| idet==3) {
+    index = (cellID>>8&0x3)-1; num = cellID>>10&0x3f;
+  } else if (idet==0 || idet==1) {
+    index = 0;                 num = cellID>>12&0xfff;
+  } else if (idet==4) { // Vertex: 1920 modules (at most) => divide by 32
+    index = (cellID>>8&0xf);   num = cellID>>12&0xfff; num /= 32;
+  }
+  else if (idet==5) { // Si: 2 systemIDs: 0x3b and 0x3c; sublayer = module parity
+    /* */                      num = cellID>>12&0xfff;
+    index = (1-(cellID%2))*2 + num%2; num /= 2;
+  }
+  if (index>3 || num>63) {
+    printf("** LayerModules: Invalid args: idet,cellID = %d,0x%08lx,0x%08lx => index,num = %d,%d\n",
+	   idet,cellID&0xffffffff,cellID>>32,index,num);
+  }
+  for (int idx = 0; idx<4; idx++) {
+    if (idx==index) patterns[idx] = ((unsigned long)0x1)<<num;
+    else            patterns[idx] = 0;
+  }
+}
+void LayerModules::operator=(LayerModules &lm) {
+  for (int idx = 0; idx<4; idx++) patterns[idx] = lm.patterns[idx];
+};
+void LayerModules::init() {
+  for (int idx = 0; idx<4; idx++) patterns[idx] = 0;
+};
+void LayerModules::add(LayerModules &lm) {
+  for (int idx = 0; idx<4; idx++) patterns[idx] |= lm.patterns[idx];
+};
+void LayerModules::subtract(LayerModules &lm) {
+  for (int idx = 0; idx<4; idx++) patterns[idx] &= ~lm.patterns[idx];
+};
+bool  LayerModules::contains(LayerModules &lm) {
+  for (int idx = 0; idx<4; idx++) {
+    if (lm.patterns[idx]&patterns[idx]) return true;
+  }
+  return false;
+};
 #endif // #ifdef recoEvents_cxx
 /*
     // HOW TO WRITE TO A PDF FILE
