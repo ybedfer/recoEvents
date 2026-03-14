@@ -186,11 +186,26 @@ public :
    // ***** MODULE SELECTION
    bool requireModules;
    void AddRequiredLayerModules(int idet, int index, unsigned long pattern);
-   // ***** HIT SELECTION
+   // ********** HIT SELECTION
    // Requirements for filling "simHs" and residuals
    int requirePDG;     // Associated MCParticle 
    int requireQuality; // "SimTrackerHit::quality". =1: reject modules where any secondary hit, >1: reject modules where more than one hit
-   int requireOffEdge; //  SimHit (or coalesced) not on edge
+   // ***** EDGE REQUIREMENT:
+   // EDGE of READOUT (named here BORDER)
+   // - Here, edge means: w/in half pitch of the extremum of the sensitive
+   //  surface along the readout coordinates.
+   // - Applies to SimHit (or coalescedHit).
+   // - Inverted rquirement if requireOffBorder<0.
+   // - OnEdge implies lesser resolution, because cluster can't spread freely.
+   int requireOffBorder;
+   // EDGE of SENSITIVE VOLUME
+   // - Here, edge means: side wall of sensitive volume, which the particle
+   //  should not cross (it should instead cross the wall parallel to the
+   //  sensitive surface).
+   // - Applies to SimHit (or coalescedHit).
+   // - Inverted rquirement if requireOffEdge<0.
+   // - Off-midPlane imples lesser resolution, since RecHit assumes on-midPlane.
+   int requireOffEdge;
   
    // ********** HISTOS
    void BookHistos(Histos *Hs, const char *tag);
@@ -204,9 +219,10 @@ public :
 		double X, double Y, double Z, double E, unsigned long cellID);
    bool fillResids(int idet,
 		   const Vector3f &pos, const Vector3d &psim, unsigned long cellID);
-   unsigned int isOnEdge(int idet, unsigned long cellID,
-			 double Xs, double Ys, double Zs);
-   double getResCut(int idet, int module, int strip, bool isOnEdge);
+   bool crossEdge(int idet, SimTrackerHitData &hit);
+   unsigned int isOnBorder(int idet, unsigned long cellID,
+			   double Xs, double Ys, double Zs);
+   double getResCut(int idet, int module, int strip, bool onBorder);
    void parseCellID(int idet, unsigned long ID,
 		    unsigned int &module, unsigned int &div, unsigned int &strip);
    bool parseStrip(int idet, int simOrRec, unsigned int &strip);
@@ -293,6 +309,7 @@ public :
    virtual void     Show(Long64_t entry = -1);
   
    void initGeometry(int idet, bool hasStrips);
+   double getCyMBaLRadius(unsigned long cellID);
 
    // ***** Data members not to be modified from command line:
    // Depending upon setup, MPGDs can have more than one sensitive surfaces.
@@ -313,12 +330,13 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
   // Init global settings
   processedDetectors = detectors; verbose = 0; select = 0;
   // ***** SELECTION
-  requireNMCs =    0; // Default: no requirement
-  requireModules = 0; // Default: all modules allowed
+  requireNMCs =      0; // Default: no requirement
+  requireModules =   0; // Default: all modules allowed
   for (int idet = 0; idet<N_DETs; idet++) requiredLayerModules[idet].init();
-  requirePDG =     0; // Default: do not require any ID
-  requireQuality = 0; // Default: do not require "SimTrackerHit::quality"
-  requireOffEdge = 0; // Default: do not require off edge
+  requirePDG =       0; // Default: do not require any ID
+  requireQuality =   0; // Default: do not require "SimTrackerHit::quality"
+  requireOffBorder = 0; // Default: do not require off border
+  requireOffEdge =   0; // Default: do not require off edge
   stripMode = hasStrips;
   requireTraversing = false; // Default = coalesce all extrapolate-compatible hits
   // ***** GEOMETRY

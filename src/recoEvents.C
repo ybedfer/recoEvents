@@ -14,10 +14,16 @@ unsigned int cExtension(double const* lpos, double const* lmom, // Input subHit
 			double rT, int direction, // Target radius
 			double dZ, double startPhi, double endPhi, // Module parameters
 			double* lext);
+unsigned int cExtension(double const* lpos, double const* lmom, // Input subHit
+			double rT,                              // Target radius
+			double dZ, double startPhi, double endPhi); // Module parameters
 unsigned int bExtension(const double* lpos, const double* lmom, // Input subHit
 			double zT, int direction, // Target Z
 			double dX, double dY, // Module parameters
 			double* lext);
+unsigned int bExtension(const double* lpos, const double* lmom, // Input subHit
+			double zT,                              // Target Z
+			double dX, double dY); // Module parameters
 int toleranceFactor(double P);
 
 void recoEvents::Loop(int nEvents, int firstEvent)
@@ -107,6 +113,7 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	  if (hit.quality==0 &&
 	      (0x1<<idet&stripMode)) { // Extend to edge of pathLength
 	    SimTrackerHitData hext; extend(idet,ih,hext);
+	    hext.momentum = hit.momentum;
 	    coalescedHs.push_back(hext);
 	  }
 	  else // Do not extend secondary: its position is, a priori, well
@@ -116,6 +123,7 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	}
 	else {
 	  SimTrackerHitData hext; if (!coalesce(idet,coalesced,hext)) return;
+	  hext.momentum = hit.momentum;
 	  sim2coa[ih] = nCoaHs; coalescedHs.push_back(hext);
 	  ih += coalesced.size()-1;
 	}
@@ -133,6 +141,7 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	if (!moduleSelection(idet,hit.cellID)) continue;
 	// ***** HIT SELECTION
 	if (status!=0x3) continue;
+	if (requireOffEdge && crossEdge(idet,hit)) continue;
 	// ***** FILL sim HISTO
 	// - It's rather "coa" rather than "sim"
 	const Vector3d &pos = hit.position;
@@ -175,6 +184,7 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	      // ***** HIT SELECTION
 	      unsigned int status = getStatus(idet,cIndex,sim2coa);
 	      if (status!=0x3) continue;
+	      if (requireOffEdge && crossEdge(idet,hit)) continue;
 	      // ***** FILL RESIDUAL
 	      const Vector3d &psim = hit.position;
 	      if (fillResids(idet,pos,psim,rec.cellID)) selecRec = 1;
@@ -305,8 +315,7 @@ void recoEvents::fillHit(int simOrRec, int idet,
     hs->Rr->Fill(Rr,div);
     // Rphi: let's used fixed radius (set from geometry) instead hit radius, so
     // as to keep Rphi range w/in detector width.
-    int section = module/8; int staveType = (section==1 || section==2)?0:1;
-    hs->xyr->Fill(Zr,radii[0][staveType]*phir);
+    hs->xyr->Fill(Zr,getCyMBaLRadius(cellID)*phir);
   }
   else if (idet==1) { // Special Outer: fill Rcosphi, Ur, Vr
     double Rcdphi, Xr, Yr, Zr, Ur, Vr;
@@ -340,9 +349,10 @@ bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
   // ***** STRIP: Convert stripID -> strip. Is it valid? 
   if (!parseStrip(idet,1,strip)) return false;
   // ***** DISREGARD EDGES?
-  unsigned int onEdge = isOnEdge(idet,cellID,Xs,Ys,Zs);
-  if (requireOffEdge>0 && onEdge) return false;
-  if (requireOffEdge<0 && !onEdge) return false;
+  unsigned int onBorder = isOnBorder(idet,cellID,Xs,Ys,Zs);
+  if (requireOffBorder>0 && onBorder) return false;
+  if (requireOffBorder<0 && !onBorder) return false;
+  double Rr = sqrt(Xr*Xr+Yr*Yr), Rs =  sqrt(Xs*Xs+Ys*Ys), dR = 1000*(Rr-Rs);
   // ***** FILL GLOBAL RESIDUALS
   Resids &rs = resHs[strip][idet];
   rs.X->Fill(dX); rs.Y->Fill(dY); rs.Z->Fill(dZ); rs.phi->Fill(dphi);
@@ -352,13 +362,16 @@ bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     double Xl, Yl, Zl, Rrs, phirs; g2lCyMBaL(Xs,Ys,Zs,div,Xl,Yl,Zl,Rrs,phis);
     double dRr = 1000*(Rrr-Rrs), dphir = 1000*(phir-phis);
     rs.R->Fill(dRr);
-    int section = module/8; int staveType = (section==1 || section==2)?0:1;
-    double radius = radii[0][staveType];
-    double Rdphi = radius*dphir; rs.Rphir->Fill(Rdphi);
+    requestDebug(idet,0x10000);
+    if (fabs(dRr)>200 && debugIsOn(0x10000)) {
+      printf("%5d 0x%08lx,0x%08lx dRr = %4.0f µm\n",
+	     evtNum,cellID&0xffffffff,cellID>>32,dRr);
+    }
+    double Rdphi = getCyMBaLRadius(cellID)*dphir; rs.Rphir->Fill(Rdphi);
     // Debugging: 0x1000<<idet
     // - Print outliers, i.e. when residuals > expectation
     // - Expectation depends upon we are on/off edge
-    double resCut = getResCut(idet,module,strip,onEdge&0x1<<strip);
+    double resCut = getResCut(idet,module,strip,onBorder&0x1<<strip);
     unsigned int dbg = 0; double RdphiMx = .24e6, dZMx = ZHLengths[0]*1000;
     if (strip==0 && fabs(dphir)>resCut || strip==1 && fabs(dZ)>resCut)
       dbg |= 0x1<<strip;
@@ -366,7 +379,6 @@ bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
       dbg |= 0x4<<strip;
     if (dbg) {
       if (debugIsOn(0x1000)) {
-	//if (strip==1 && fabs(dZ)>0) {
 	printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f R,φ %7.3f mm %7.3fπ\n",
 	       evtNum,cellID&0xffffffff,cellID>>32,
 	       Xd,Yd,Zd,Rrr,phir/TMath::Pi());
@@ -391,22 +403,23 @@ bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
   else if (idet==1) { // Outer specific
     double Rcdphir, Xd, Yd, Zd, Ur, Vr; g2lOuter(Xr,Yr,Zr,module,Rcdphir,Xd,Yd,Zd,Ur,Vr);
     double Rcdphis, Xl, Yl, Zl, Us, Vs; g2lOuter(Xs,Ys,Zs,module,Rcdphis,Xl,Yl,Zl,Us,Vs);
-    //if (doPrint)
-    //printf("Rr,Rrs: %.2f,%.2f, Ur,Urs: %.2f,%.2f, Vr,Vrs: %.2f,%.2f\n",
-    //	     Rcdphi,Rcdphis,Ur,Urs,Vr,Vrs);
     double dRcdphi = 1000*(Rcdphir-Rcdphis);
     rs.R->Fill(dRcdphi);
+    requestDebug(idet,0x10000);
+    if (fabs(dRcdphi)>200 && debugIsOn(0x10000)) {
+      printf("%5d 0x%08lx,0x%08lx dRr = %4.0f µm\n",
+	     evtNum,cellID&0xffffffff,cellID>>32,dRcdphi);
+    }
     double dU = 1000*(Ur-Us), dV = 1000*(Vr-Vs);
     rs.Ur->Fill(dU); rs.Vr->Fill(dV);
     //rs.xyr->Fill(Xrs,Yrs,strip?dUr:dVr);
-    double resCut = getResCut(idet,module,strip,onEdge&0x1<<strip);
+    double resCut = getResCut(idet,module,strip,onBorder&0x1<<strip);
     unsigned int dbg = 0; double dMx = .75e6;
     if (strip==0 && fabs(dU)>resCut || strip==1 && fabs(dV)>resCut)
       dbg |= 0x1<<strip;
     if (strip==1 && fabs(dU)>dMx || strip==0 && fabs(dV)>dMx)
       dbg |= 0x4<<strip;
     if (dbg) {
-	//if (strip==1 && fabs(dU)>0) {
       if (debugIsOn(0x1000)) {
 	printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f U,V %8.3f,%8.3f mm\n",
 	       evtNum,cellID&0xffffffff,cellID>>32,
@@ -428,17 +441,16 @@ bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     }
   }
   else {
-    double Rr = sqrt(Xr*Xr+Yr*Yr), Rs =  sqrt(Xs*Xs+Ys*Ys), dR = 1000*(Rr-Rs);
     rs.R->Fill(dR);
   }
   return true;
 }
-unsigned int recoEvents::isOnEdge(int idet, unsigned long cellID,
-				  double Xs, double Ys, double Zs)
+unsigned int recoEvents::isOnBorder(int idet, unsigned long cellID,
+				    double Xs, double Ys, double Zs)
 {
   // Is hit(<Xs,Ys,Zs>) on edge? I.e. w/in pitch/2 of edge
   // Return pattern of 1st and 2nd coord
-  unsigned int onEdge = 0;
+  unsigned int onBorder = 0;
   unsigned int module, div, dummy; parseCellID(idet,cellID,module,div,dummy);
   if (idet==0) {
     // ***** GLOBAL -> LOCAL
@@ -449,12 +461,12 @@ unsigned int recoEvents::isOnEdge(int idet, unsigned long cellID,
 	double radius = radii[0][staveType];    
 	double hWidth = hWidths[0][staveType], phiPitch = pitches[0][staveType]/radius;
 	if (phil<-hWidth+phiPitch/2 || phil>hWidth-phiPitch/2)
-	  onEdge |= 0x1<<strip;
+	  onBorder |= 0x1<<strip;
       }
       else {
 	double hLength = ZHLengths[0], ZPitch = pitches[0][1];
 	if (Zl<-hLength+ZPitch/2 || Zl>hLength-ZPitch/2)
-	  onEdge |= 0x1<<strip;
+	  onBorder |= 0x1<<strip;
       }
     }
   } else if (idet==1) {
@@ -465,13 +477,13 @@ unsigned int recoEvents::isOnEdge(int idet, unsigned long cellID,
       double hWidth = hWidths[1][0], hLength = ZHLengths[1];
       double hSpan = (hWidth+hLength)/sqrt(2), pitch = pitches[1][0]/1000;
       if (W<-hSpan+pitch/2 || W>hSpan-pitch/2)
-	  onEdge |= 0x1<<strip;
+	  onBorder |= 0x1<<strip;
     }
   }
   //else: nothing done for non-MPGDs
-  return onEdge;
+  return onBorder;
 }
-double recoEvents::getResCut(int idet, int module, int strip, bool onEdge)
+double recoEvents::getResCut(int idet, int module, int strip, bool onBorder)
 {
   // Returns in µm or mrd for CyMBaL phi
   double resCut;
@@ -480,17 +492,60 @@ double recoEvents::getResCut(int idet, int module, int strip, bool onEdge)
       int section = module/8; int staveType = (section==1 || section==2)?0:1;
       double radius = radii[0][staveType];
       double phiPitch = pitches[0][0]/radius;
-      resCut = onEdge ? 1000*phiPitch/2 : 3*resolutions[0]/radius; // in mrd
+      resCut = onBorder ? 1000*phiPitch/2 : 3*resolutions[0]/radius; // in mrd
     } else {
       double ZPitch = pitches[0][1];
-      resCut = onEdge ? ZPitch/2*1000 : 3*resolutions[0];
+      resCut = onBorder ? ZPitch/2*1000 : 3*resolutions[0];
     }
   } else {
     double pitch = pitches[1][0];
-    resCut = onEdge ? pitch/2*1000 : 3*resolutions[1];
+    resCut = onBorder ? pitch/2*1000 : 3*resolutions[1];
   }
   return resCut;
 }
+bool recoEvents::crossEdge(int idet, SimTrackerHitData &hit)
+{
+  bool cross = false;
+  unsigned long cID = hit.cellID;
+  const Vector3d &pos = hit.position;
+  double Mx = pos.x, My = pos.y, Mz = pos.z;
+  const Vector3f &mom = hit.momentum;
+  double Px = mom.x, Py = mom.y, Pz = mom.z;
+  double lpos[3], &Xr = lpos[0], &Yr = lpos[1], &Zr = lpos[2];
+  double dummy[3];
+  if (idet==0) {
+    // Global -> Local
+    unsigned int module, div, strip; parseCellID(idet,cID,module,div,strip);
+    double Rr, phir; g2lCyMBaL(Mx,My,Mz,div,Xr,Yr,Zr,Rr,phir);
+    double lmom[3];  g2lCyMBaL(Px,Py,Pz,div,lmom);
+    // Volume parameters
+    int section = div>>3, staveType = section==1 || section==2 ? 0 : 1;
+    double endPhi = hWidths[0][staveType], startPhi = -endPhi;
+    double dZ = ZHLengths[0];
+    // Loop on extending to inner/outer volume walls
+    for (int io = 0; io<2; io++) {
+      double rT = radii[0][staveType]+(2*io-1)*volumeThicknesses[0]/2;
+      unsigned int status = cExtension(lpos,lmom,rT,dZ,startPhi,endPhi);
+      cross |= status!=0;
+    }
+  }
+  else if (idet==1) {
+    // Global -> Local
+    unsigned int module, div, strip; parseCellID(idet,cID,module,div,strip);
+    double Rcdphi, Ur, Vr; g2lOuter(Mx,My,Mz,module,Rcdphi,Xr,Yr,Zr,Ur,Vr);
+    double lmom[3];        g2lOuter(Px,Py,Pz,module,lmom);
+    // Volume parameters
+    double dX = hWidths[1][0], dY = ZHLengths[1];
+    // Loop on extending to inner/outer volume walls
+    for (int io = 0; io<2; io++) {
+      double zT = (2*io-1)*volumeThicknesses[1]/2;
+      unsigned int status = bExtension(lpos,lmom,zT,dX,dY);
+      cross |= status!=0;
+    }
+  }
+  return cross;
+}
+// ************************* LOCAL <-> GLOBAL
 void recoEvents::g2lCyMBaL(double X,   double Y,   double Z, unsigned int div,
 			   double &Xr, double &Yr, double &Zr,
 			   double &Rr, double &phir)
@@ -837,8 +892,8 @@ bool recoEvents::coalesce(int idet, vector<int> coalesced, SimTrackerHitData &he
   // III) Else, rare case where only thin SUBVOLUMES, we assign the position
   //  to one of the subHits, preferentially 0x0.
   int ihs[5] = {-1,-1,-1,-1,-1};
-  int ic; unsigned int hPat; double eDep; for (ic = 0, eDep = 0, hPat = 0;
-					       ic<(int)coalesced.size(); ic++) {
+  int ic; unsigned int hPat; double eDep, pathLength;
+  for (ic = 0, eDep=pathLength = 0, hPat = 0; ic<(int)coalesced.size(); ic++) {
     int ih = coalesced[ic]; SimTrackerHitData &hit = hits[idet]->at(ih);
     int subVolID = hit.cellID>>28&0xf;
     if (subVolID>4) {
@@ -848,7 +903,7 @@ bool recoEvents::coalesce(int idet, vector<int> coalesced, SimTrackerHitData &he
       continue;
     }
     ihs[subVolID] = ih; hPat |= 0x1<<subVolID;
-    eDep += hit.eDep;
+    eDep += hit.eDep; pathLength += hit.pathLength;
   }
   if ((hPat&0x18)==0x18) { // ***** COALESCE SUBVOLUMES 0x3 anD 0x4
     // - Set position = 1/2sum of hits extrapolated by 1/2-pathLength (
@@ -887,7 +942,7 @@ bool recoEvents::coalesce(int idet, vector<int> coalesced, SimTrackerHitData &he
     double Ex = Exs[fb][0], Ey = Eys[fb][0], Ez = Ezs[fb][0];
     double Fx = Exs[bf][1], Fy = Eys[bf][1], Fz = Ezs[bf][1];
     Vector3d pext; pext.x = (Ex+Fx)/2; pext.y = (Ey+Fy)/2; pext.z = (Ez+Fz)/2;
-    hext.position = pext; hext.eDep = eDep;
+    hext.position = pext; hext.eDep = eDep; hext.pathLength = pathLength;
     hext.cellID = h3t.cellID;
     hext.quality = h3t.quality; // Coalesced hits passed samePMO => same quality
     if (doDebug)
@@ -1038,13 +1093,14 @@ void recoEvents::extend(int idet, int ih, SimTrackerHitData &hext)
     printf("hit %2d/%-2d: extend\n",ih,(int)hits[idet]->size());
     unsigned int module, div, strip; parseCellID(idet,hit.cellID,module,div,strip);
     if (idet==0) {
-      double Xr, Yr, Zr, Rr, phir;
-      g2lCyMBaL(Mx,My,Mz,div,Xr,Yr,Zr,Rr,phir); double MR = Rr;
-      g2lCyMBaL(Ex,Ey,Ez,div,Xr,Yr,Zr,Rr,phir); double ER = Rr;
-      printf(" 0x%08lx,0x%08lx %.2f,%.2f,%.2f (%.3f)",
-	     hit.cellID&0xffffffff,hit.cellID>>32,Mx,My,Mz,MR);
+      unsigned long cellID = hit.cellID;
+      double Nx, Ny, Nz, NR, phir, Fx, Fy, Fz, FR, R0 = getCyMBaLRadius(cellID);
+      g2lCyMBaL(Mx,My,Mz,div,Nx,Ny,Nz,NR,phir);
+      g2lCyMBaL(Ex,Ey,Ez,div,Fx,Fy,Fz,FR,phir);
+      printf(" 0x%08lx,0x%08lx %.2f,%.2f(%.3f),%.2f",
+	     cellID&0xffffffff,cellID>>32,Nx,Ny,NR-R0,Nz);
       if (doExtend)
-	printf(" -> %.2f,%.2f,%.2f (%.3f)",Ex,Ey,Ez,ER);
+	printf(" -> %.2f,%.2f(%.3f),%.2f",Fx,Fy,FR-R0,Fz);
       printf(" mm\n");
     }
     else if (idet==1) {
@@ -1243,23 +1299,24 @@ void recoEvents::debugAssoc(int idet)
     int nArhs = arhs[idet]->size(); // Associations raw hit
     int nAshs = ashs[idet]->size(); // Associations sim hit
     int nARhs = aRhs[idet]->size(); // Associations Rec Hit -> raw hit
-    printf("arhs %d\n",nArhs);
+    printf("arhs %d:",nArhs);
     for (int ih = 0; ih<nArhs; ih++) {
       podio::ObjectID &arh = arhs[idet]->at(ih);
       int rIndex = arh.index; unsigned int cID = arh.collectionID;
-      printf("%d: %d 0x%x\n",ih,rIndex,cID);
+      printf(" %d: %d 0x%x,",ih,rIndex,cID);
     }
-    printf("ashs %d\n",nAshs);
+    printf("\nashs %d:",nAshs);
     for (int ih = 0; ih<nAshs; ih++) {
       podio::ObjectID &ash = ashs[idet]->at(ih);
       int sIndex = ash.index; unsigned int cID = ash.collectionID;
-      printf("%d: %d 0x%x\n",ih,sIndex,cID);
+      printf(" %d: %d 0x%x,",ih,sIndex,cID);
     }
-    printf("aRhs %d\n",nARhs);
+    printf("\naRhs %d:",nARhs);
     for (int iR = 0; iR<nARhs; iR++) {
       podio::ObjectID &aRh = aRhs[idet]->at(iR);
-      printf("%d: %d\n",iR,aRh.index);
+      printf(" %d: %d,",iR,aRh.index);
     }
+    printf("\n");
   }
 }
 void recoEvents::debugAssoc(int idet, map<int,int>raw2rec, map<int,int> sim2coa, map<int,vector<int>> rec2coas)
@@ -1319,20 +1376,27 @@ bool recoEvents::extendHit(int idet, int ih, int direction, double *gext)
     double lend[3];
     unsigned int status =
       cExtension(lpos,lmom,rT,pm*direction,dZ,startPhi,endPhi,lend);
-    if (debugIsOn(0x100) && !(status&0x1)) {
+    if (debugIsOn(0x100)) {
       // Extension may fail altogether in the cylindrical geometry.
+      double R0 = getCyMBaLRadius(cID);
       printf(" extendHit(%d,%d(0x%08lx,0x%08lx)) %.4f-(%d)->%.4f: 0x%x\n",
-	     idet,ih,cID&0xffffffff,cID>>32,Rr,pm*direction,rT,status);
-      printf("%.2f,%.2f(%.4f),%.2f mm %.4f,%.4f,%.4f GeV\n",
-	     Xr,Yr,Rr,Zr,lmom[0],lmom[1],lmom[2]);
+	     idet,ih,cID&0xffffffff,cID>>32,Rr-R0,pm*direction,rT-R0,status);
+      printf("  %.2f,%.2f(%.2f),%.2f mm %.4f,%.4f,%.4f GeV",
+	     Xr,Yr,Rr-getCyMBaLRadius(cID),Zr,lmom[0],lmom[1],lmom[2]);
+      if (status&0xf) {
+	double Ex = lend[0], Ey = lend[1], Ez = lend[2], ER = sqrt(Ex*Ex+Ey*Ey);
+	printf(" -> %.2f,%.2f(%.4f),%.2f mm\n",Ex,Ey,ER-R0,Ez);
+      }
+      else
+	printf("\n");
     }
+    if (!(status&0xf)) return false;
     else {
       double gend[3]; l2gCyMBaL(lend,div,gend);
       for (int i = 0; i<3; i++) gext[i] = (gini[i]+gend[i])/2;
     }
   }
   else {
-    
     unsigned int module, div, strip; parseCellID(idet,cID,module,div,strip);
     double Rcdphi, Ur, Vr; g2lOuter(Mx,My,Mz,module,Rcdphi,Xr,Yr,Zr,Ur,Vr);
     double lmom[3];        g2lOuter(Px,Py,Pz,module,lmom);
@@ -1393,7 +1457,7 @@ unsigned int cExtension(double const* lpos, double const* lmom, // Input subHit
       double rE = sqrt(Ex * Ex + Ey * Ey), phiE = atan2(Ey,Ex);
       // Note: have to discard the phi+pi solution.
       if (rLow < rE && rE < rUp && fabs(Ez) < dZ && fabs(phiE-phi) < 1) {
-        status |= 0x1;
+        status |= 0x2;
         tF = t;
       }
     }
@@ -1411,12 +1475,12 @@ unsigned int cExtension(double const* lpos, double const* lmom, // Input subHit
       if (rLow < rE && rE < rUp && startPhi < phi && phi < endPhi) {
         if (t < 0) {
           if (!status || (status && t > tF)) {
-            status |= 0x1;
+            status |= 0x4;
             tF = t;
           }
         } else if (t > 0) {
           if (!status || (status && t < tF)) {
-            status |= 0x1;
+            status |= 0x8;
             tF = t;
           }
         }
@@ -1452,10 +1516,67 @@ unsigned int cExtension(double const* lpos, double const* lmom, // Input subHit
       }
     }
   }
-  if (status & 0x1) {
+  if (status & 0xf) {
     lext[0] = Mx + tF * Px;
     lext[1] = My + tF * Py;
     lext[2] = Mz + tF * Pz;
+  }
+  return status;
+}
+unsigned int cExtension(double const* lpos, double const* lmom, // Input subHit
+			double rT,                              // Target radius
+			double dZ, double startPhi, double endPhi) // Module parameters
+{
+  unsigned int status = 0;
+  double Mx = lpos[0], My = lpos[1], Mz = lpos[2];
+  double Px = lmom[0], Py = lmom[1], Pz = lmom[2];
+  double M2 = Mx * Mx + My * My, rIni = sqrt(M2), rLow, rUp;
+  if (rIni < rT) {
+    rLow = rIni;
+    rUp  = rT;
+  } else {
+    rLow = rT;
+    rUp  = rIni;
+  }
+  // Intersection w/ the edge in phi
+  double tF = 0;
+  for (double phi : {startPhi, endPhi}) {
+    // M+t*P = 0 + t'*U. t = (My*Ux-Mx*Uy)/(Px*Uy-Py*Ux);
+    double Ux = cos(phi), Uy = sin(phi);
+    double D = Px * Uy - Py * Ux;
+    if (D) { // If P not // to U
+      double t = (My * Ux - Mx * Uy) / D;
+      double Ex = Mx + t * Px, Ey = My + t * Py, Ez = Mz + t * Pz;
+      double rE = sqrt(Ex * Ex + Ey * Ey), phiE = atan2(Ey,Ex);
+      // Note: have to discard the phi+pi solution.
+      if (rLow < rE && rE < rUp && fabs(Ez) < dZ && fabs(phiE-phi) < 1) {
+        status |= 0x2;
+        tF = t;
+      }
+    }
+  }
+  // Intersection w/ the edge in Z
+  double zLow = -dZ, zUp = +dZ;
+  for (double Z : {zLow, zUp}) {
+    // Mz+t*Pz = Z
+    if (Pz) {
+      double t = (Z - Mz) / Pz;
+      double Ex = Mx + t * Px, Ey = My + t * Py, rE = sqrt(Ex * Ex + Ey * Ey);
+      double phi = atan2(Ey, Ex);
+      if (rLow < rE && rE < rUp && startPhi < phi && phi < endPhi) {
+        if (t < 0) {
+          if (!status || (status && t > tF)) {
+            status |= 0x4;
+            tF = t;
+          }
+        } else if (t > 0) {
+          if (!status || (status && t < tF)) {
+            status |= 0x8;
+            tF = t;
+          }
+        }
+      }
+    }
   }
   return status;
 }
@@ -1479,15 +1600,15 @@ unsigned int bExtension(const double* lpos, const double* lmom, // Input subHit
   }
   // Intersection w/ the edge in X,Y
   double tF       = 0;
-  double xyLow[2] = {-dX, +dX}, xyUp[2] = {-dY, +dY};
+  double xyLow[2] = {-dX, -dY}, xyUp[2] = {+dX, +dY};
   for (int xy = 0; xy < 2; xy++) {
     int yx       = 1 - xy;
-    double a_Low = xyLow[xy], a_Up = xyUp[xy], Pa = Pxy[xy];
+    double a_Low = xyLow[xy], a_Up = xyUp[xy], Ma = Mxy[xy], Pa = Pxy[xy];
     double b_Low = xyLow[yx], b_Up = xyUp[yx], Mb = Mxy[yx], Pb = Pxy[yx];
     for (double A : {a_Low, a_Up}) {
-      // Mz+t*Pz = A
+      // Ma+t*Pa = A
       if (Pa) {
-        double t = (A - Mz) / Pa;
+        double t = (A - Ma) / Pa;
         if (t * direction < 0)
           continue;
         double Eb = Mb + t * Pb, Ez = Mz + t * Pz;
@@ -1512,6 +1633,45 @@ unsigned int bExtension(const double* lpos, const double* lmom, // Input subHit
     lext[0] = Mx + tF * Px;
     lext[1] = My + tF * Py;
     lext[2] = Mz + tF * Pz;
+  }
+  return status;
+}
+unsigned int bExtension(const double* lpos, const double* lmom, // Input subHit
+			double zT,                              // Target Z
+			double dX, double dY) // Module parameters
+{
+  unsigned int status = 0;
+  double Mx = lpos[0], My = lpos[1], Mxy[2] = {Mx, My};
+  double Px = lmom[0], Py = lmom[1], Pxy[2] = {Px, Py};
+  double Mz = lpos[2], Pz = lmom[2];
+  double &zIni = Mz, zLow, zUp;
+  if (zIni < zT) {
+    zLow = zIni;
+    zUp  = zT;
+  } else {
+    zLow = zT;
+    zUp  = zIni;
+  }
+  // Intersection w/ the edge in X,Y
+  double tF       = 0;
+  double xyLow[2] = {-dX, -dY}, xyUp[2] = {+dX, +dY};
+  for (int xy = 0; xy < 2; xy++) {
+    int yx       = 1 - xy;
+    double a_Low = xyLow[xy], a_Up = xyUp[xy], Ma = Mxy[xy], Pa = Pxy[xy];
+    double b_Low = xyLow[yx], b_Up = xyUp[yx], Mb = Mxy[yx], Pb = Pxy[yx];
+    for (double A : {a_Low, a_Up}) {
+      // Ma+t*Pa = A
+      if (Pa) {
+        double t = (A - Ma) / Pa;
+        double Eb = Mb + t * Pb, Ez = Mz + t * Pz;
+        if (zLow < Ez && Ez < zUp && b_Low < Eb && Eb < b_Up) {
+          if (!status || (status && fabs(t) < fabs(tF))) {
+            status |= 0x1;
+            tF = t;
+          }
+        }
+      }
+    }
   }
   return status;
 }
@@ -1600,6 +1760,7 @@ void recoEvents::DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
       double Rcdphi, Ur, Vr; g2lOuter(Mx,My,Mz,module,Rcdphi,Xr,Yr,Zr,Ur,Vr);
       lpos[0] = Zr/10; lpos[1] = Xr/10; lpos[2] = Yr/10;
       double lmom[3]; g2lOuter(Px,Py,Pz,module,lmom);
+      double lzxy[3]; lzxy[0] = lmom[2]; lzxy[1] = lmom[0]; lzxy[2] = lmom[1];
       // Pathlength
       double path = hit.pathLength/10;
       // Parameters
@@ -1620,15 +1781,15 @@ void recoEvents::DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
 
       printf("double lpos[3] = {%.6f,%.6f,%.6f};\n",
 	     lpos[0],lpos[1],lpos[2]);
-      printf("double lmom[3] = {%.6f,%.6f,%.6f};\n",lmom[0],lmom[1],lmom[2]);
+      printf("double lmom[3] = {%.6f,%.6f,%.6f};\n",lzxy[0],lzxy[1],lzxy[2]);
       printf("double path = %.6f;\n",hit.pathLength/10);
       printf("double pars[5] = {%.5f,%.5f,%.5f,%.5f,%.5f};\n",
 	rMin,rMax,startX,endX,dZ);
       printf("double r2s[2] = {%.5f,%.5f};\n",r2s[0],r2s[1]);
 
       // DrawHit
-      if (addToPreExisting) AddHit(      lpos,lmom,path);
-      else                  bDrawHit(pars,lpos,lmom,path,r2s);
+      if (addToPreExisting) AddHit(       lpos,lzxy,path);
+      else                  bDrawHit(pars,lpos,lzxy,path,r2s);
     }
   }
 }
@@ -1839,4 +2000,10 @@ void AddHit(double *lpos, double *lmom, double path)
     tp->DrawLine(Mx,My,Nx,Ny);
     tp->DrawLine(Nx-w,Ny,Nx+w,Ny); tp->DrawLine(Nx,Ny-w,Nx,Ny+w);
   }
+}
+double recoEvents::getCyMBaLRadius(unsigned long cellID)
+{
+  int module = cellID>>12&0xfff;
+  int section = module/8; int staveType = (section==1 || section==2)?0:1;
+  return radii[0][staveType];
 }
