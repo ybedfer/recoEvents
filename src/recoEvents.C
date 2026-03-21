@@ -92,11 +92,10 @@ void recoEvents::Loop(int nEvents, int firstEvent)
       initDetEvent();     // Init requirement for current detector
       // *************** LOOP ON SELECTED DETECTORS
       int nHits = hits[idet]->size(); // SimHits
-      vector<SimTrackerHitData> coalescedHs; map<int,int> sim2coa;
       for (int ih = 0; ih<nHits; ih++) {
 	// ********** LOOP ON sim HITS: COALESCING AND EXTENDING
 	// -> "coalescedHs"
-	SimTrackerHitData &hit = hits[idet]->at(ih);
+	const SimTrackerHitData &hit = hits[idet]->at(ih);
 	int jh = ih; vector<int> coalesced; int nCoaHs = coalescedHs.size();
 	if (0x1<<idet&stripMode) {
 	  while (++jh<nHits && samePMO(idet,ih,jh)) {
@@ -131,41 +130,69 @@ void recoEvents::Loop(int nEvents, int firstEvent)
       }
       finaliseDetEvent();
 
-      int nCoaHs = coalescedHs.size();
-      for (int ih = 0; ih<nCoaHs; ih++) {
+      for (int ih = 0; ih<(int)coalescedHs.size(); ih++) {
 	// ********** LOOP ON coalescedHs
-	SimTrackerHitData &hit = coalescedHs[ih];
-	unsigned int status = getStatus(idet,ih,sim2coa);
-	debugHit(idet,ih,nCoaHs,hit,status);
+	debugHit(idet,ih);
+	initStatusWord(ih);
 	// ***** MODULE SELECTION
-	if (!moduleSelection(idet,hit.cellID)) continue;
+	if (!moduleRequirementOK(idet,ih)) continue;
 	// ***** HIT SELECTION
-	if (status!=0x3) continue;
-	if (requireOffEdge && crossEdge(idet,hit)) continue;
+	if (!PDGRequirementOK(idet,ih)) continue;
+	if (!primaryRequirementOK(ih)) continue;
+	if (!borderRequirementOK(idet,ih)) continue;
+	if (!edgeRequirementOK(idet,ih)) continue;
+	setStatusWord(ih);
 	// ***** FILL sim HISTO
-	// - It's rather "coa" rather than "sim"
-	const Vector3d &pos = hit.position;
-	double X = pos.x, Y = pos.y, Z = pos.z;
-	fillHit(0,idet,X,Y,Z,hit.eDep,hit.cellID);
-	debugHit(idet,hit);
+	// - It's "coa" rather than "sim"
+	fillSimHit(idet,ih);
+	debugHit(idet,ih);
       }
       if (!reconstruction) continue;
 
-      // ********** ASSOCIATION: BUILD rec -> coa MAP
-      map<int,vector<int>,less<int>> rec2coas;
-      if (!getrec2coas(idet,sim2coa,rec2coas)) continue;
+      // ********** ASSOCIATION: BUILD Rec/raw -> coa MAP
+      if (!setXReferences(idet)) continue;
 
-      for (int ir = 0; ir<(int)recs[idet]->size(); ir++) {
+      for (int iR = 0; iR<(int)recs[idet]->size(); iR++) {
 	// ********** LOOP ON Rec HITS
-	edm4eic::TrackerHitData &rec = recs[idet]->at(ir);
-	const Vector3f &pos = rec.position;
-	double X = pos.x, Y = pos.y, Z = pos.z;
-	debugRec(idet,ir);
+	debugRec(idet,iR);
 	// ********** RESIDUALS
 	// ***** REFERENCE TO coa HIT
-	map<int,vector<int>,less<int>>::const_iterator im = rec2coas.find(ir);
-	if (im==rec2coas.end()) {
+	map<int,vector<int>,less<int>>::const_iterator im = Rec2coas.find(iR);
+	if (im==Rec2coas.end()) {
 	  printf("#%5d Warning: det %d: rec %d not associated\n",
+		 evtNum,idet,iR);
+	}
+	else {
+	  const vector<int> &coas = im->second;
+	  int is, selecRec; for (is=selecRec = 0; is<(int)coas.size(); is++) {
+	    int cIndex = coas[is];
+	    if (cIndex<0 || nHits<=cIndex) {
+	      printf("#%5d Warning: det %d: Rec %d -> sim %d\n",
+		     evtNum,idet,iR,cIndex);
+	    }
+	    else {
+	      debugHitRec(idet,is,(int)coas.size(),cIndex,iR);
+	      // ***** SELECTIONS
+	      if (!(getStatusWord(cIndex)&0x2)) continue;
+	      // ***** FILL RESIDUAL
+	      if (fillResids(idet,cIndex,iR)) selecRec = 1;
+	    }
+	  }
+	  if (selecRec) {  // ***** FILL rec HISTOS
+	    fillRecHit(idet,iR);
+	    debugRec(idet,iR);
+	  }
+	}
+      }
+
+      if (!(0x1<<idet&stripMode)) // So far only strip detectors
+	continue;
+      for (int ir = 0; ir<(int)raws[idet]->size(); ir++) {
+	// ********** LOOP ON raw HITS
+	// ***** REFERENCE TO coa HIT
+	map<int,vector<int>,less<int>>::const_iterator im = raw2coas.find(ir);
+	if (im==raw2coas.end()) {
+	  printf("#%5d Warning: det %d: raw %d not associated\n",
 		 evtNum,idet,ir);
 	}
 	else {
@@ -177,29 +204,19 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 		     evtNum,idet,ir,cIndex);
 	    }
 	    else {
-	      SimTrackerHitData &hit = coalescedHs[cIndex];
-	      debugHitRec(idet,is,(int)coas.size(),cIndex,hit,ir);
-	      // ***** MODULE SELECTION
-	      if (!moduleSelection(idet,rec.cellID)) continue;
-	      // ***** HIT SELECTION
-	      unsigned int status = getStatus(idet,cIndex,sim2coa);
-	      if (status!=0x3) continue;
-	      if (requireOffEdge && crossEdge(idet,hit)) continue;
-	      // ***** FILL RESIDUAL
-	      const Vector3d &psim = hit.position;
-	      if (fillResids(idet,pos,psim,rec.cellID)) selecRec = 1;
+	      // ***** SELECTIONS
+	      if (!(getStatusWord(cIndex)&0x2)) continue;
+	      // ***** FILL raw Histos
+	      fillRawHit(idet,ir);
+	      break;
 	    }
-	  }
-	  if (selecRec) {  // ***** FILL rec HISTOS
-	    fillHit(1,idet,X,Y,Z,rec.edep,rec.cellID);
-	    debugRec(idet,ir);
 	  }
 	}
       }
     }
   }
 }
-unsigned int recoEvents::getStatus(int idet, int ih)
+unsigned int recoEvents::getSimHitStatus(int idet, int ih)
 {
   // Returned status is OR of conformity to quality and PDG requirements.
   // 0x1: PDG OK.
@@ -211,25 +228,72 @@ unsigned int recoEvents::getStatus(int idet, int ih)
   if (!requirePDG || part.PDG==requirePDG) status |= 0x1;
   return status;
 }
-unsigned int recoEvents::getStatus(int idet, int ih, map<int,int> &sim2coa)
+void recoEvents::initStatusWord(int ih)
 {
-  unsigned int status = 0;
+  // -> 8-bit status word stored in SimTrackerHitData::quality, taking
+  // advantage of the fact that only bits 30,31 have a predetermined meaning.
+  //  0x01: "setStatusWord" has been applied.
+  //  0x02: All requirements fulfilled
+  //  0x04: PDG requirement fulfilled
+  //  0x08: quality>0 (as opposed to quality>1) requirement fulfilled
+  //  0x10: quality>1 requirement fulfilled
+  //  0x20: Border requirement fulfilled
+  //  0x40: Edge requirement fulfilled
+  SimTrackerHitData &hit = coalescedHs[ih]; // Not const
+  // Quality
+  std::int32_t &quality = hit.quality; // From original SimHit, to be updated
+  quality |= 0x1;
+}
+bool recoEvents::PDGRequirementOK(int idet, int ih)
+{
+  if (!requirePDG) return true;
+  SimTrackerHitData &hit = coalescedHs[ih]; // Not const
+  // "ih" is index into array of "coalescedHs".
+  // => Let's get index into array of SimHits
   for (auto is = sim2coa.cbegin(); is!=sim2coa.cend(); is++) {
     if (is->second==ih) {
-      int jh = is->first; status = getStatus(idet,jh);
-      break;
+      int jh = is->first;
+      MCParticleData &part = getMCParticle(idet,jh);
+      return part.PDG==requirePDG;
     }
   }
-  return status;
+  printf("%5d: coalescedHs[%d] is not mapped to any SimHit\n",evtNum,ih);
+  return false;
+}
+bool recoEvents::primaryRequirementOK(int ih) {
+  if (!requireQuality) return true;
+  SimTrackerHitData &hit = coalescedHs[ih]; // Not const
+  std::int32_t quality = hit.quality;
+  const int BITProducedBySecondary = 30;
+  return !(quality & 1 << BITProducedBySecondary);
+}
+void recoEvents::setStatusWord(int ih)
+{
+  SimTrackerHitData &hit = coalescedHs[ih]; // Not const
+  std::int32_t &quality = hit.quality;
+  /* All requirements fulfilled */ quality |= 0x02;
+  if (requirePDG)                  quality |= 0x04;
+  if (requireQuality)              quality |= 0x08;
+  if (requireQuality>1)            quality |= 0x10;
+  if (requireOffBorder)            quality |= 0x20;
+  if (requireOffEdge)              quality |= 0x40;
+}
+unsigned short recoEvents::getStatusWord(int ih)
+{
+  // Returned status: see "setStatusWord".
+  const SimTrackerHitData &hit = coalescedHs[ih];
+  return hit.quality;
 }
 MCParticleData& recoEvents::getMCParticle(int idet, int ih)
 {
   podio::ObjectID &amc = amcs[idet]->at(ih); int mcIdx = amc.index;
   return mcParticles->at(mcIdx);
 }
-bool recoEvents::getrec2coas(int idet, map<int,int> &sim2coa,
-			     map<int,vector<int>,less<int>> &rec2coas)
+bool recoEvents::setXReferences(int idet)
 {
+  // Init
+  raw2Rec.clear(); Rec2coas.clear(); raw2coas.clear();
+  // Checks: size of association arrays match
   int nAshs = ashs[idet]->size(); // Associations sim hit
   int nArhs = arhs[idet]->size(); // Associations raw hit
   int nRecs = recs[idet]->size(); // Rec hits
@@ -244,9 +308,8 @@ bool recoEvents::getrec2coas(int idet, map<int,int> &sim2coa,
   // raw -> Rec
   // raw can only be associated to one Rec, by construction...
   // ...and vice-versa, by convention imprinted in edm4hep::TrackerHit
-  map<int,int,less<int>> raw2rec;
   for (int iR = 0; iR<nARhs; iR++) {
-    podio::ObjectID &aRh = aRhs[idet]->at(iR); raw2rec[aRh.index] = iR;
+    podio::ObjectID &aRh = aRhs[idet]->at(iR); raw2Rec[aRh.index] = iR;
   }
   // Rec <-> coas
   for (int ih = 0; ih<nArhs; ih++) {
@@ -255,11 +318,7 @@ bool recoEvents::getrec2coas(int idet, map<int,int> &sim2coa,
     podio::ObjectID &arh = arhs[idet]->at(ih); //RawHitAssociations_rawHit
     int rIndex = arh.index;
     // raw -> Rec: "RIndex"
-    map<int,int>::const_iterator iR = raw2rec.find(rIndex);
-    if (iR==raw2rec.end())
-      // One raw may be lost here, but that lost one is then associated to
-      // the same sims as the retained one.
-      continue;
+    map<int,int>::const_iterator iR = raw2Rec.find(rIndex);
     int RIndex = iR->second;
     // sim: "sIndex"
     podio::ObjectID &ash = ashs[idet]->at(ih); //RawHitAssociations_simHit
@@ -268,21 +327,52 @@ bool recoEvents::getrec2coas(int idet, map<int,int> &sim2coa,
     map<int,int>::const_iterator is = sim2coa.find(sIndex);
     if (is==sim2coa.end()) continue;
     int cIndex = is->second;
-    // Rec -> coa
-    map<int,vector<int>>::iterator im = rec2coas.find(RIndex);
-    if (im==rec2coas.end()) {
-      vector<int> coas; coas.push_back(cIndex); rec2coas[RIndex] = coas;
+    if (iR!=raw2Rec.end()) {
+      // Rec -> coa
+      map<int,vector<int>>::iterator im = Rec2coas.find(RIndex);
+      if (im==Rec2coas.end()) {
+	vector<int> coas; coas.push_back(cIndex); Rec2coas[RIndex] = coas;
+      } else {
+	// Not twice same SimHit associated to RecHit.
+	vector<int> &coas = im->second;
+	int is, match; for (is=match = 0; is<(int)coas.size(); is++) {
+	  if (coas[is]==cIndex) { match = 1; break; }
+	}
+	if (!match) coas.push_back(cIndex);
+      }
+    }
+    // else
+    // One raw may be lost here, but that lost one is then associated to
+    // the same sims as the retained one.
+    // raw -> coa
+    map<int,vector<int>>::iterator im = raw2coas.find(rIndex);
+    if (im==raw2coas.end()) {
+      vector<int> coas; coas.push_back(cIndex); raw2coas[rIndex] = coas;
     } else {
-      // Not twice same SimHit associated to RecHit.
       vector<int> &coas = im->second;
-      int is, match; for (int is=match = 0; is<(int)coas.size(); is++) {
+      // Not twice same SimHit associated to rawHit.
+      int is, match; for (is=match = 0; is<(int)coas.size(); is++) {
 	if (coas[is]==cIndex) { match = 1; break; }
       }
       if (!match) coas.push_back(cIndex);
     }
   }
-  debugAssoc(idet,raw2rec,sim2coa,rec2coas);
+  debugMaps(idet);
   return true;
+}
+void recoEvents::fillSimHit(int idet, int ih)
+{
+  const SimTrackerHitData &hit = coalescedHs[ih];
+  const Vector3d &pos = hit.position;
+  double X = pos.x, Y = pos.y, Z = pos.z;
+  fillHit(0,idet,X,Y,Z,hit.eDep,hit.cellID);
+}
+void recoEvents::fillRecHit(int idet, int ir)
+{
+  edm4eic::TrackerHitData &rec = recs[idet]->at(ir);
+  const Vector3f &pos = rec.position;
+  double X = pos.x, Y = pos.y, Z = pos.z;
+  fillHit(1,idet,X,Y,Z,rec.edep,rec.cellID);
 }
 void recoEvents::fillHit(int simOrRec, int idet,
 			 double X, double Y, double Z, double eDep,
@@ -334,9 +424,14 @@ void recoEvents::fillHit(int simOrRec, int idet,
     hs->xyr->Fill(Yr,Xr);
   }
 }
-bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim, unsigned long cellID)
+bool recoEvents::fillResids(int idet, int ih, int ir)
 {
-  // Returns false if edge requirement not fulfilled.
+  // Returns false if inconsistency.
+  const SimTrackerHitData &hit = coalescedHs[ih];
+  const Vector3d &psim = hit.position;
+  const edm4eic::TrackerHitData &rec = recs[idet]->at(ir);
+  const Vector3f &pos = rec.position;
+  unsigned long cellID = rec.cellID;
   // Debugging
   requestDebug(idet,0x1000);
   // Determine residuals: pos-psim
@@ -348,10 +443,6 @@ bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
   unsigned int module, div, strip; parseCellID(idet,cellID,module,div,strip);
   // ***** STRIP: Convert stripID -> strip. Is it valid? 
   if (!parseStrip(idet,1,strip)) return false;
-  // ***** DISREGARD EDGES?
-  unsigned int onBorder = isOnBorder(idet,cellID,Xs,Ys,Zs);
-  if (requireOffBorder>0 && onBorder) return false;
-  if (requireOffBorder<0 && !onBorder) return false;
   double Rr = sqrt(Xr*Xr+Yr*Yr), Rs =  sqrt(Xs*Xs+Ys*Ys), dR = 1000*(Rr-Rs);
   // ***** FILL GLOBAL RESIDUALS
   Resids &rs = resHs[strip][idet];
@@ -368,17 +459,18 @@ bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
 	     evtNum,cellID&0xffffffff,cellID>>32,dRr);
     }
     double Rdphi = getCyMBaLRadius(cellID)*dphir; rs.Rphir->Fill(Rdphi);
-    // Debugging: 0x1000<<idet
-    // - Print outliers, i.e. when residuals > expectation
-    // - Expectation depends upon we are on/off edge
-    double resCut = getResCut(idet,module,strip,onBorder&0x1<<strip);
-    unsigned int dbg = 0; double RdphiMx = .24e6, dZMx = ZHLengths[0]*1000;
-    if (strip==0 && fabs(dphir)>resCut || strip==1 && fabs(dZ)>resCut)
-      dbg |= 0x1<<strip;
-    if (strip==1 && fabs(Rdphi)>RdphiMx || strip==0 && fabs(dZ)>dZMx*1.01)
-      dbg |= 0x4<<strip;
-    if (dbg) {
-      if (debugIsOn(0x1000)) {
+    if (debugIsBooked(0x1000)) { // Conditioning the execution of the somewhat lengthy "isOnBorder"
+      // Debugging: 0x1000<<idet
+      // - Print outliers, i.e. when residuals > expectation
+      // - Expectation depends upon we are on/off edge
+      unsigned int onBorder = isOnBorder(idet,cellID,Xs,Ys,Zs);
+      double resCut = getResCut(idet,module,strip,onBorder&0x1<<strip);
+      unsigned int dbg = 0; double RdphiMx = .24e6, dZMx = ZHLengths[0]*1000;
+      if (strip==0 && fabs(dphir)>resCut || strip==1 && fabs(dZ)>resCut)
+	dbg |= 0x1<<strip;
+      if (strip==1 && fabs(Rdphi)>RdphiMx || strip==0 && fabs(dZ)>dZMx*1.01)
+	dbg |= 0x4<<strip;
+      if (dbg && debugIsOn(0x1000)) {
 	printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f R,φ %7.3f mm %7.3fπ\n",
 	       evtNum,cellID&0xffffffff,cellID>>32,
 	       Xd,Yd,Zd,Rrr,phir/TMath::Pi());
@@ -413,14 +505,15 @@ bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     double dU = 1000*(Ur-Us), dV = 1000*(Vr-Vs);
     rs.Ur->Fill(dU); rs.Vr->Fill(dV);
     //rs.xyr->Fill(Xrs,Yrs,strip?dUr:dVr);
-    double resCut = getResCut(idet,module,strip,onBorder&0x1<<strip);
-    unsigned int dbg = 0; double dMx = .75e6;
-    if (strip==0 && fabs(dU)>resCut || strip==1 && fabs(dV)>resCut)
-      dbg |= 0x1<<strip;
-    if (strip==1 && fabs(dU)>dMx || strip==0 && fabs(dV)>dMx)
-      dbg |= 0x4<<strip;
-    if (dbg) {
-      if (debugIsOn(0x1000)) {
+    if (debugIsBooked(0x1000)) { // Conditioning the execution of the somewhat lengthy "isOnBorder"
+      unsigned int onBorder = isOnBorder(idet,cellID,Xs,Ys,Zs);
+      double resCut = getResCut(idet,module,strip,onBorder&0x1<<strip);
+      unsigned int dbg = 0; double dMx = .75e6;
+      if (strip==0 && fabs(dU)>resCut || strip==1 && fabs(dV)>resCut)
+	dbg |= 0x1<<strip;
+      if (strip==1 && fabs(dU)>dMx || strip==0 && fabs(dV)>dMx)
+	dbg |= 0x4<<strip;
+      if (dbg && debugIsOn(0x1000)) {
 	printf("#%5d 0x%08lx,0x%08lx  %7.2f,%7.2f,%8.2f U,V %8.3f,%8.3f mm\n",
 	       evtNum,cellID&0xffffffff,cellID>>32,
 	       Xd,Yd,Zd,Ur,Vr);
@@ -444,6 +537,16 @@ bool recoEvents::fillResids(int idet, const Vector3f &pos, const Vector3d &psim,
     rs.R->Fill(dR);
   }
   return true;
+}
+bool recoEvents::borderRequirementOK(int idet, int ih)
+{
+  if (!requireOffBorder) return true;
+  const SimTrackerHitData &hit = coalescedHs[ih];
+  const Vector3d &pos = hit.position;
+  double X = pos.x, Y = pos.y, Z = pos.z;
+  unsigned int onBorder = isOnBorder(idet,hit.cellID,X,Y,Z);
+  if (requireOffBorder>0) return !onBorder;
+  else                    return onBorder;
 }
 unsigned int recoEvents::isOnBorder(int idet, unsigned long cellID,
 				    double Xs, double Ys, double Zs)
@@ -503,7 +606,15 @@ double recoEvents::getResCut(int idet, int module, int strip, bool onBorder)
   }
   return resCut;
 }
-bool recoEvents::crossEdge(int idet, SimTrackerHitData &hit)
+bool recoEvents::edgeRequirementOK(int idet, int ih)
+{
+  if (!requireOffEdge) return true;
+  const SimTrackerHitData &hit = coalescedHs[ih];
+  bool cross = crossEdge(idet,hit);
+  if (requireOffEdge>0) return !cross;
+  else                  return cross;
+}
+bool recoEvents::crossEdge(int idet, const SimTrackerHitData &hit)
 {
   bool cross = false;
   unsigned long cID = hit.cellID;
@@ -544,6 +655,21 @@ bool recoEvents::crossEdge(int idet, SimTrackerHitData &hit)
     }
   }
   return cross;
+}
+void recoEvents::fillRawHit(int idet, int ir)
+{
+  edm4eic::RawTrackerHitData &raw = raws[idet]->at(ir);
+  unsigned long cellID = raw.cellID;
+  unsigned int module, div, strip; parseCellID(idet,cellID,module,div,strip);
+  // ***** STRIP: Convert stripID -> strip. Is it valid? 
+  if (!parseStrip(idet,1,strip)) return;  
+  RawHs &hs = rawHs[strip][idet];
+  std::int16_t chN = strip==0 ? cellID>>32&0xffff : cellID>>48&0xffff;
+  hs.chN->Fill(chN,div);
+  int section = 0; if (idet==0) section = module/8;
+  else             if (idet==1) section = module%2;
+  hs.ADC->Fill(raw.charge/gains[idet],section);
+  hs.TDC->Fill(raw.timeStamp/1e3,section);
 }
 void recoEvents::parseCellID(int idet, unsigned long ID,
 			    unsigned int &module, unsigned int &div,
@@ -729,10 +855,11 @@ bool recoEvents::extrapolate(int idet, int ih, int jh)
   requestDebug(idet,0x100);
   bool doPrint = debugIsOn(0x100);
   if (!doPrint && !ok) {
-    // Do print debugging message, even if not requested, when extrpolation
-    // turns out to fail in case status is 0x3 and despite quality requirement.
-    unsigned status = getStatus(idet,ih);
-    doPrint = (status==0x3) && requireQuality==2;
+    // Do print debugging message, even if not requested, when extrapolation
+    // turns out to fail in case SimHit quality >0 and PDG requirement (assumed
+    // to be =13, i.e. muon) is fulfilled.
+    unsigned status = getSimHitStatus(idet,ih);
+    doPrint = status==0x3;
   }
   if (doPrint) {
     printf("%d,%d dext %f/%f\n",ih,jh,dext,dMx);
@@ -851,7 +978,8 @@ bool recoEvents::coalesce(int idet, vector<int> coalesced, SimTrackerHitData &he
     int ih = (hPat&0x8) ? ihs[3] : ihs[4];
     SimTrackerHitData &hit = hits[idet]->at(ih);
     extend(idet,ih,hext);
-    hext.eDep = eDep;
+    hext.eDep = eDep; hext.pathLength = pathLength; hext.quality = hit.quality;
+    hext.cellID = hit.cellID;
     if (doDebug) {
       unsigned long cID = hit.cellID; const Vector3d &pos = hit.position;
       double Mx = pos.x, My = pos.y, Mz = pos.z;
@@ -864,7 +992,7 @@ bool recoEvents::coalesce(int idet, vector<int> coalesced, SimTrackerHitData &he
     else    if (hPat&0x2) ih = ihs[1];
     else                  ih = ihs[2];
     SimTrackerHitData &hit = hits[idet]->at(ih);
-    hext.position = hit.position; hext.eDep = eDep;
+    hext.position = hit.position; hext.eDep = eDep; hext.pathLength = pathLength;
     hext.cellID = hit.cellID; hext.quality = hit.quality;
     if (doDebug) {
       unsigned long cID = hit.cellID; const Vector3d &pos = hit.position;
@@ -1045,6 +1173,9 @@ bool recoEvents::checkTraversing(int idet, SimTrackerHitData &hit,
 // ***** EVENT CONTROL, DEBUGGING
 void recoEvents::initDetEvent()
 {
+  // Coalesced hits
+  coalescedHs.clear(); sim2coa.clear();
+  // LayerModules
   prvLayerModule.init();
   allLayerModules.init(); // All (layer,module)'s w/ hit
   // (Layer,module)'s where LONE PRIMARIES and only that
@@ -1060,6 +1191,10 @@ void recoEvents::requestDebug(int idet, unsigned int level)
     doDebug |= level; // Set debug ON
     debuggedDet = idet;
   }
+}
+bool recoEvents::debugIsBooked(unsigned int level)
+{
+  return doDebug&level;
 }
 bool recoEvents::debugIsOn(unsigned int level)
 {
@@ -1090,10 +1225,10 @@ void recoEvents::updateDetEvent(int idet, int ih)
   if (allLayerModules.contains(prvLayerModule))// Already encountered module...
     layerModulesLP1.subtract(prvLayerModule); // ...Remove from module-pattern of SINGLE LONE PRIMARIES
   // LONE PRIMARY?
-  unsigned int status = getStatus(idet,ih);
-  if (status&0x2) { // Primary
-    if (newModule)   // New module has primary...
-      prvLayerModuleLP = lm;  // ...=> Set "moduleLP"
+  const int BITProducedBySecondary = 30;
+  if (!(hit.quality&1<<BITProducedBySecondary)) { // Primary
+    if (newModule)                                  // New module has primary...
+      prvLayerModuleLP = lm;                        // ...=> Set "moduleLP"
   }
   else              // Interfering secondary
     prvLayerModuleLP.init();  // ...=> Reset "moduleLP"
@@ -1108,8 +1243,10 @@ void recoEvents::finaliseDetEvent()
     layerModulesLP1.subtract(prvLayerModule);
   allLayerModules.add(prvLayerModule);
 }
-bool recoEvents::moduleSelection(int idet, unsigned long cellID)
+bool recoEvents::moduleRequirementOK(int idet, int ih)
 {
+  const SimTrackerHitData &hit = coalescedHs[ih];
+  unsigned long cellID = hit.cellID;
   LayerModules lm(idet,cellID);
   if (requireModules && !requiredLayerModules[idet].contains(lm))
     return false;
@@ -1119,22 +1256,17 @@ bool recoEvents::moduleSelection(int idet, unsigned long cellID)
   else                        ok = 1;
   return ok;
 }
-void recoEvents::debugHit(int idet, int ih, int nHs, SimTrackerHitData &hit, unsigned int status)
+void recoEvents::debugHit(int idet, int ih)
 {
   requestDebug(idet,0x1);
   if (debugIsOn(0x1)) {
+    int nCoaHs = coalescedHs.size();
+    const SimTrackerHitData &hit = coalescedHs[ih];
     const Vector3d &pos = hit.position;
+    unsigned short status = getStatusWord(ih);
     printf("hit %2d/%-2d: 0x%08lx,0x%08lx X,Y,Z %7.2f,%7.2f,%8.2f status 0x%x\n",
-	   ih,nHs,hit.cellID&0xffffffff,hit.cellID>>32,
+	   ih,nCoaHs,hit.cellID&0xffffffff,hit.cellID>>32,
 	   pos.x,pos.y,pos.z,status);
-  }
-}
-void recoEvents::debugHit(int idet, SimTrackerHitData &hit)
-{
-  if (debugIsOn(0x1)) {
-    const Vector3d &pos = hit.position;
-    double X = pos.x, Y = pos.y, Z = pos.z;
-    printHit(idet,X,Y,Z,hit.cellID);
   }
 }
 void recoEvents::printHit(int idet,
@@ -1176,9 +1308,10 @@ void recoEvents::debugRec(int idet, int ir)
   printf("rec %d/%d: 0x%08lx,0x%08lx %6.1f,%6.1f,%6.1f\n",
 	 ir,nRecs,rec.cellID&0xffffffff,rec.cellID>>32,pos.x,pos.y,pos.z);
 }
-void recoEvents::debugHitRec(int idet, int is, int ncoas, int cIndex, SimTrackerHitData &hit, int ir)
+void recoEvents::debugHitRec(int idet, int is, int ncoas, int cIndex, int ir)
 {
   if ((verbose&0x10<<idet) || evtNum==evtToDebug) {
+    const SimTrackerHitData &hit = coalescedHs[cIndex];
     int nRecs = recs[idet]->size();
     edm4eic::TrackerHitData &rec = recs[idet]->at(ir);
     printf("SimHit %d/%d:%d(0x%08lx,0x%08lx) RecHit %d/%d 0x%08lx,0x%08lx\n",
@@ -1196,14 +1329,16 @@ void recoEvents::debugAssoc(int idet)
     printf("arhs %d:",nArhs);
     for (int ih = 0; ih<nArhs; ih++) {
       podio::ObjectID &arh = arhs[idet]->at(ih);
-      int rIndex = arh.index; unsigned int cID = arh.collectionID;
-      printf(" %d: %d 0x%x,",ih,rIndex,cID);
+      int rIndex = arh.index;
+      edm4eic::RawTrackerHitData &raw = raws[idet]->at(rIndex);
+      printf(" %d: %d(0x%08lx)",ih,rIndex,raw.cellID&0xffffffff);
     }
     printf("\nashs %d:",nAshs);
     for (int ih = 0; ih<nAshs; ih++) {
       podio::ObjectID &ash = ashs[idet]->at(ih);
-      int sIndex = ash.index; unsigned int cID = ash.collectionID;
-      printf(" %d: %d 0x%x,",ih,sIndex,cID);
+      int sIndex = ash.index;
+      SimTrackerHitData &sim = hits[idet]->at(sIndex);
+      printf(" %d: %d(0x%08lx),",ih,sIndex,sim.cellID&0xffffffff);
     }
     printf("\naRhs %d:",nARhs);
     for (int iR = 0; iR<nARhs; iR++) {
@@ -1213,19 +1348,25 @@ void recoEvents::debugAssoc(int idet)
     printf("\n");
   }
 }
-void recoEvents::debugAssoc(int idet, map<int,int>raw2rec, map<int,int> sim2coa, map<int,vector<int>> rec2coas)
+void recoEvents::debugMaps(int idet)
 {
   if (!(verbose&0x10<<idet)) return;
   map<int,int>::const_iterator ir;
-  for (ir = raw2rec.cbegin(); ir != raw2rec.cend(); ir++) {
-    printf("raw2rec %d -> %d\n",ir->first,ir->second);
+  for (ir = raw2Rec.cbegin(); ir != raw2Rec.cend(); ir++) {
+    printf("raw2Rec %d -> %d\n",ir->first,ir->second);
   }
   for (ir = sim2coa.cbegin(); ir != sim2coa.cend(); ir++) {
     printf("sim2coa %d -> %d\n",ir->first,ir->second);
   }
   map<int,vector<int>>::const_iterator im;
-  for (im = rec2coas.cbegin(); im != rec2coas.cend(); im++) {
-    printf("rec2coas: %d ->",im->first);
+  for (im = Rec2coas.cbegin(); im != Rec2coas.cend(); im++) {
+    printf("Rec2coas: %d ->",im->first);
+    const vector<int> &coas = im->second;
+    for (int is = 0; is<(int)coas.size(); is++) printf(" %d",coas[is]);
+    printf("\n");
+  }
+  for (im = raw2coas.cbegin(); im != raw2coas.cend(); im++) {
+    printf("raw2coas: %d ->",im->first);
     const vector<int> &coas = im->second;
     for (int is = 0; is<(int)coas.size(); is++) printf(" %d",coas[is]);
     printf("\n");

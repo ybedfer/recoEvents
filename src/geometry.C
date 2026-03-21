@@ -44,6 +44,7 @@ void recoEvents::initGeometry(int idet, bool hasStrips)
     //<constant name="MMnStripsZ"      value = "512" />
     int nStripsPhi = 512; pitches[0].push_back(2*hwidth/nStripsPhi);
     int nStripsZ =   512; pitches[0].push_back(2*ZHLengths[0]/nStripsZ);
+    nChannels[0].push_back(nStripsPhi); nChannels[0].push_back(nStripsZ);
   }
   else if (idet==1) {                    // ***** OUTER
     radii[1].push_back(737.4650);
@@ -58,6 +59,8 @@ void recoEvents::initGeometry(int idet, bool hasStrips)
     ZHLengths[1] = 840;
     //<constant name="MPGDOuterBarrelPitch"                        value = "800*um" />
     double outerPitch = 800; pitches[1].push_back(outerPitch/1000);
+    // <constant name="MPGDOuterBarrelnStrips"                      value = "1792" />
+    nChannels[1].push_back(1792); nChannels[1].push_back(1792);
   }
   else if (idet==2 || idet==3) {         // ***** Endcaps
     // <constant name="BackwardMPGDMod1_rmin"         value="70.0*mm" />

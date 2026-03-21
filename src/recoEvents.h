@@ -93,6 +93,8 @@ using namespace edm4hep;
 
 typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *R, *phi, *phir, *th, *mod, *thphi, *XY, *ZR, *Rr, *xyr, *Ur, *Vr, *eDep; }
   Histos;
+typedef struct{ TDirectory *dir; TH2D *chN, *ADC, *TDC; }
+  RawHs;
 typedef struct{ TDirectory *dir; TH1D *X, *Y, *Z, *phi, *R, *Rphir, *Ur, *Vr; /* TProfile2D *xyr; */}
   Resids;
 
@@ -138,6 +140,11 @@ public :
    bool requireTraversing; // Conditions coalescing
    int getDetHit(int idet, int ih, double &X, double &Y, double &Z,
 		 unsigned int &module, unsigned int &div);
+   // ***** COALESCED HIT and X-REFERENCES
+   vector<SimTrackerHitData> coalescedHs;
+   map<int,int> sim2coa;
+   map<int,int,less<int>> raw2Rec;
+   map<int,vector<int>,less<int>> Rec2coas, raw2coas;
    // ***** EVENT CONTROL, DEBUGGING
    int evtNum; // Current event# (used to document error messages).
   // (Layer,Module)
@@ -178,6 +185,7 @@ public :
    double ZHLengths[N_DETs];          // HalfLengths
    vector<double> pitches[N_DETs];    // pitch in mm
    double gains[N_DETs], eDThresholds[N_DETs], resolutions[N_DETs];
+   vector<int> nChannels[N_DETs];
 
    // ***** SELECTION
    TTreeFormula *select; // Provides for specifying a rejection cut.
@@ -208,24 +216,22 @@ public :
    int requireOffEdge;
   
    // ********** HISTOS
+   // ***** BOOKING
    void BookHistos(Histos *Hs, const char *tag);
+   void BookRawHs (RawHs  *Hs, const char *tag);
    void getxyArgs(bool isRec, int idet, double &xMx, double &yMx, string &sT);
-   unsigned int getStatus(int idet, int ih);
-   unsigned int getStatus(int idet, int ih, map<int,int> &sim2coa);
-   MCParticleData& getMCParticle(int idet, int ih);
-   bool getrec2coas(int idet, map<int,int> &sim2coa,
-		    map<int,vector<int>,less<int>> &rec2coas);
+   // ***** FILLING
+   void fillSimHit(int idet, int ih);
+   void fillRecHit(int idet, int iR);
+   void fillRawHit(int idet, int ir);
    void fillHit(int iSimRec, int idet,
 		double X, double Y, double Z, double E, unsigned long cellID);
-   bool fillResids(int idet,
-		   const Vector3f &pos, const Vector3d &psim, unsigned long cellID);
-   bool crossEdge(int idet, SimTrackerHitData &hit);
-   unsigned int isOnBorder(int idet, unsigned long cellID,
-			   double Xs, double Ys, double Zs);
+   bool fillResids(int idet, int ih, int ir);
    double getResCut(int idet, int module, int strip, bool onBorder);
    void parseCellID(int idet, unsigned long ID,
 		    unsigned int &module, unsigned int &div, unsigned int &strip);
    bool parseStrip(int idet, int simOrRec, unsigned int &strip);
+   // ***** LOCAL <-> GLOBAL
    void g2lCyMBaL(double X,   double Y,   double Z, unsigned int div,
 		  double &Xr, double &Yr, double &Zr,
 		  double &Rr, double &phir);
@@ -238,6 +244,7 @@ public :
    void g2lOuter(double Px, double Py, double Pz, unsigned int module,
 		 double *lmom);
    void l2gOuter(double *lpos, unsigned int module, double *gpos);
+   // ***** COALESCING/EXTENDING
    bool samePMO(int idet, int ih, int jh);
    bool extrapolate(int idet, int ih, int jh);
    bool coalesce(int idet, vector<int> coalesced, SimTrackerHitData &hext);
@@ -247,19 +254,33 @@ public :
    bool extendHit(int idet, int ih, int direction, double *lext);
    // ***** EVENT CONTROL, DEBUGGING
    void initDetEvent();
-   void requestDebug(int idet, unsigned int level);
-   bool debugIsOn(unsigned int level);
    void updateDetEvent(int idet, int ih);
    void finaliseDetEvent();
-   bool moduleSelection(int idet, unsigned long cellID);
+   unsigned int getSimHitStatus(int idet, int ih);
+   void initStatusWord(int ih);
+   void setStatusWord(int ih);
+   unsigned short getStatusWord(int ih);
+   bool PDGRequirementOK(int idet, int ih);
+   MCParticleData& getMCParticle(int idet, int ih);
+   bool primaryRequirementOK(int ih);
+   bool moduleRequirementOK(int idet, int ih);
+   bool edgeRequirementOK(int idet, int ih);
+   bool crossEdge(int idet, const SimTrackerHitData &hit);
+   bool borderRequirementOK(int idet, int ih);
+   unsigned int isOnBorder(int idet, unsigned long cellID,
+			   double Xs, double Ys, double Zs);
+   bool setXReferences(int idet);
+   void requestDebug(int idet, unsigned int level);
+   bool debugIsBooked(unsigned int level);
+   bool debugIsOn(unsigned int level);
    void printHit(int idet,
 		 double X, double Y, double Z, unsigned long cellID);
-   void debugHit(int idet, int ih, int nHs, SimTrackerHitData &hit, unsigned int status);
-   void debugHit(int idet, SimTrackerHitData &hit);
+   void debugHit(int idet, int ih);
    void debugRec(int idet, int ir);
-   void debugHitRec(int idet, int is, int ncoas, int cIndex, SimTrackerHitData &hit, int ir);
+   void debugHitRec(int idet, int is, int ncoas, int cIndex, int ir);
    void debugAssoc(int idet);
-   void debugAssoc(int idet, map<int,int>raw2rec, map<int,int> sim2coa, map<int,vector<int>> rec2sims);
+   void debugMaps(int idet);
+   // ***** DRAWING
    static constexpr int violet = kMagenta+2, bleu = kBlue+1, vert = kGreen+2;
    static constexpr int jaune = kOrange+0, orange = kOrange+1, rouge  = kRed+0;
    static constexpr int marron = 50, gris   = 11;
@@ -275,6 +296,7 @@ public :
    TDirectory *dSim, *dSimDets[N_DETs];
    TDirectory *dRec, *dRecDets[N_DETs];
    Histos simHs[N_DETs], recHs[2][N_DETs];
+   RawHs  rawHs[2][N_DETs];
    Resids resHs[2][N_DETs];
    TH1D *hMult;
    void DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
@@ -287,6 +309,8 @@ public :
    TBranch *amcBranches[N_DETs];
    vector<edm4eic::TrackerHitData> *recs[N_DETs];
    TBranch *recBranches[N_DETs];
+   vector<edm4eic::RawTrackerHitData> *raws[N_DETs];
+   TBranch *rawBranches[N_DETs];
    vector<podio::ObjectID> *arhs[N_DETs];
    TBranch *arhBranches[N_DETs];
    vector<podio::ObjectID> *ashs[N_DETs];
@@ -464,6 +488,15 @@ void recoEvents::Init(TTree *tree)
        string name(branchName); name += string("RecHits");
        fChain->SetBranchAddress(name.c_str(),&recs[idet],&recBranches[idet]);
      }
+     // ********** RAWHITS
+     for (int idet = 0; idet<N_DETs; idet++) {
+       const char *branchNames[N_DETs] = {
+	 "MPGDBarrel","OuterMPGDBarrel","BackwardMPGDEndcap","ForwardMPGDEndcap",
+	 "SiBarrelVertex","SiBarrelTracker"};
+       const char *branchName = branchNames[idet];
+       string name(branchName); name += string("RawHits");
+       fChain->SetBranchAddress(name.c_str(),&raws[idet],&rawBranches[idet]);
+     }
      // ***** RAWHITS <-> SIMHITS ASSOCIATION
      for (int idet = 0; idet<N_DETs; idet++) {
        const char *branchNames[N_DETs] = {
@@ -523,8 +556,12 @@ void recoEvents::Init(TTree *tree)
      dRec = gDirectory->mkdir(dN); dRec->cd();
      printf(" * Init: TDirectory \"%s\"\n",gDirectory->GetName());
      // ***** INSTANTIATION
-     BookHistos(recHs[0],"r0");
-     BookHistos(recHs[1],"r1");
+     // RecHit
+     BookHistos(recHs[0],"R0");
+     BookHistos(recHs[1],"R1");
+     // RawHit
+     BookRawHs(rawHs[0],"r0");
+     BookRawHs(rawHs[1],"r1");
      dSave->cd();
    }
 }
@@ -536,6 +573,20 @@ void setAxes(TAxis *ax, int nDiv, int maxDigits)
   ax->SetTitleSize(.065);  ax->SetTitleOffset(1.0);
   if (maxDigits) ax->SetMaxDigits(maxDigits);
 }
+void getEDBinning(double eDThr, double *eDBins)
+{
+  // Log binning; set a bin edge at threshold
+#define N_eDBINS 256
+  //double eDBins[N_eDBINS+1];
+  double sq4_10 = sqrt(sqrt(10.)), sq16_10 = sqrt(sqrt(sq4_10)), sq64_10 = sqrt(sqrt(sq16_10));
+  double eDBin; int bin;
+  for (bin = 64, eDBin = eDThr; bin>=0; bin--) {
+    eDBins[bin] = eDBin; eDBin /= sq64_10;
+  }
+  for (bin = 64, eDBin = eDThr; bin<=N_eDBINS; bin++) {
+    eDBins[bin] = eDBin; eDBin *= sq64_10;
+  }
+}
 void recoEvents::BookHistos(Histos *Hs, const char* tag)
 {
   using namespace ROOT;
@@ -543,14 +594,14 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 
   // ***** PARSE <tag> ARG.
   // Check internal consistency
-  if (strcmp(tag,"s") && strcmp(tag,"r0") && strcmp(tag,"r1")) {
+  if (strcmp(tag,"s") && strcmp(tag,"R0") && strcmp(tag,"R1")) {
     printf("** BookHistos: Inconsistency: Invalid <tag> arg.(=\"%s\"). Aborting...\n",tag);
     exit(1);
   }
-  bool isRec = tag[0]=='r';
+  bool isRec = tag[0]=='R';
   // ***** STRIPS
   int iStrip = 0;
-  if (!strcmp(tag,"r1")) iStrip = 2; // 2nd coordinate, for STRIPS
+  if (!strcmp(tag,"R1")) iStrip = 2; // 2nd coordinate, for STRIPS
   else                   iStrip = 1;
 
   // ***** BASE DIRECTORY
@@ -564,7 +615,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     if (iStrip==2 && !(0x1<<idet&stripMode)) // 2nd coordinate: skip if not STRIP
       continue;
     Histos &hs = Hs[idet];
-    // ***** SUB-DIRECTORY
+    // ***** SUB-DIRECTORY = "d<DetectorName>"
     string sdS = string("d")+string(detectorNames[idet]);
     if ((0x1<<idet&stripMode) && iStrip==2) sdS += string("2"); 
     const char *sdN = sdS.c_str();
@@ -630,7 +681,10 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     }      
     double divMn = -.5, divMx = nDivs-.5; 
     const double pi = TMath::Pi();
-    char hN[] = "hthphi"; size_t lN = strlen(hN)+1;
+    // ***** HISTO NAME:
+    // No distinctive detector tag, since TDirectory already has one...
+    // ...but still a strip tag (that may be helpful in some circumstances).
+    char hN[] = "r0thphi"; size_t lN = strlen(hN)+1;
     // ***** HISTO TITLE = DETECTOR NAME [+ STRIP COORDINATE]
     char hT[] =
       "Outer#font[32]{U};d#font[32]{Rc#delta#scale[1.2]{#varphi}}  #font[22]{(#mum)}   "; size_t lT = strlen(hT)+1;
@@ -679,7 +733,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     hs.phi = new TH2D(hN,hT,512,-pi,  pi,nDivs,divMn,divMx); 
     snprintf(hN,lN,"%s%s",tag,"phir");
     snprintf(hT,lT,"%s;#scale[1.2]{#varphi}r  #font[22]{(rad)}   ",dN);
-    hs.phir = new TH2D(hN,hT,512,-pi,  pi,nDivs,divMn,divMx); 
+    hs.phir = new TH2D(hN,hT,512,-pi, pi,nDivs,divMn,divMx); 
     snprintf(hN,lN,"%s%s",tag,"th");
     snprintf(hT,lT,"%s;#theta  #font[22]{(rad)}   ",dN);
     hs.th =  new TH2D(hN,hT,256,  0,  pi,nDivs,divMn,divMx);
@@ -687,17 +741,8 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     snprintf(hT,lT,"%s;module#",dN);
     hs.mod = new TH2D(hN,hT,nMods,modMn-.5,modMn+nMods-.5,nLayers,divMn,divMx);
     // ***** eDep
-    // Log binning: set a bin edge at threshold
-    double eDThr = eDThresholds[idet];
-    double sq4_10 = sqrt(sqrt(10.)), sq16_10 = sqrt(sqrt(sq4_10)), sq64_10 = sqrt(sqrt(sq16_10));
-#define N_eDBINS 256
-    double eDBin; int bin; double eDBins[N_eDBINS+1];
-    for (bin = 64, eDBin = eDThr; bin>=0; bin--) {
-      eDBins[bin] = eDBin; eDBin /= sq64_10;
-    }
-    for (bin = 64, eDBin = eDThr; bin<=N_eDBINS; bin++) {
-      eDBins[bin] = eDBin; eDBin *= sq64_10;
-    }
+    // Log binning; set a bin edge at threshold
+    double eDBins[N_eDBINS+1]; getEDBinning(eDThresholds[idet],eDBins);
     snprintf(hN,lN,"%s%s",tag,"eDep");
     snprintf(hT,lT,"%s;eDep (keV)   ",dN);
     hs.eDep = new TH2D(hN,hT,N_eDBINS,eDBins,nDivs,divMn,divMx);
@@ -908,6 +953,81 @@ void recoEvents::getxyArgs(bool isRec, int idet, double &xMx, double &yMx, strin
   //  binning for SimHits and RecHits...
   xMx += .025; yMx += .025;
 }
+void recoEvents::BookRawHs(RawHs  *Hs, const char* tag)
+{
+  // RawHit histos. So far, only for strip detectors (the estriction allows to
+  // not have to deal w/ the so many channels of pixel detectors).
+  using namespace ROOT;
+  using namespace std;
+
+  // ***** PARSE <tag> ARG.
+  // Check internal consistency
+  if (strcmp(tag,"s") && strcmp(tag,"r0") && strcmp(tag,"r1")) {
+    printf("** BookRawHs: Inconsistency: Invalid <tag> arg.(=\"%s\"). Aborting...\n",tag);
+    exit(1);
+  }
+  // ***** STRIPS
+  int iStrip = 0;
+  if (!strcmp(tag,"r1")) iStrip = 2; // 2nd coordinate, for STRIPS
+  else                   iStrip = 1;
+    
+  // ***** BASE DIRECTORY
+  TDirectory *dSave = gDirectory;
+
+  // ********** LOOP ON DETECTORS
+  for (int idet = 0; idet<N_DETs; idet++) {
+    if (!(0x1<<idet&processedDetectors)) continue;
+    if (!(0x1<<idet&stripMode)) // No strip => no booking
+      continue;
+    RawHs &hs = Hs[idet];
+    // ***** SUB-DIRECTORY = "r<DetectorName>"
+    string sdS = string("r")+string(detectorNames[idet]);
+    if ((0x1<<idet&stripMode) && iStrip==2) sdS += string("2"); 
+    const char *sdN = sdS.c_str();
+    TDirectory *dSD = dSave->mkdir(sdN); dSD->cd(); hs.dir = dSD;
+    printf(" * BookRawHs: TDirectory \"%s\"",gDirectory->GetName());
+    if ((0x1<<idet&stripMode) && iStrip==2) {
+      string sdT("2nd coord."); gDirectory->SetTitle(sdT.c_str());
+      printf(" - %s",gDirectory->GetTitle());
+    }
+    printf("\n");
+    // *************** INSTANTIATE HISTOS
+    // ***** SET HISTO RANGES
+    int nMods = nModules[idet], modMn = moduleMns[idet], modMx = modMn+nMods-1;
+    int nSections = 1;
+    int nChs = nChannels[idet][iStrip-1];
+    if (idet==0) {
+      nSections = 4;
+    } else if (idet==1) {
+      nSections = 2;
+    }
+    // ***** HISTO NAME:
+    // No distinctive detector tag, since TDirectory already has one...
+    // ...but still a strip tag (that may be helpful in some circumstances).
+    char hN[] = "r0charge"; size_t lN = strlen(hN)+1;
+    // ***** HISTO TITLE = DETECTOR NAME + STRIP COORDINATE
+    char hT[] =
+      "Outer#font[32]{U};#font[32]{t}  #font[22]{(ns)}   "; size_t lT = strlen(hT)+1;
+    string dS(detectorNames[idet]);
+    // Document the strip's coord.
+    dS += string(coordNames[iStrip-1][idet]);
+    const char *dN = dS.c_str();
+    // ********** LOOP ON HISTOS
+    // Have a bin centered @ 0.
+    snprintf(hN,lN,"%s%s",tag,"chN");
+    snprintf(hT,lT,"%s;channel#   ",dN);
+    hs.chN = new TH2D(hN,hT,nChs,-nChs/2-.5,nChs/2-.5,nMods,modMn-.5,modMx+.5);
+    // ***** Charge
+    // Log binning; set a bin edge at threshold
+    double eDBins[N_eDBINS+1]; getEDBinning(eDThresholds[idet],eDBins);
+    snprintf(hN,lN,"%s%s",tag,"charge");
+    snprintf(hT,lT,"%s;ADC   ",dN);
+    hs.ADC = new TH2D(hN,hT,N_eDBINS,eDBins,nSections,-.5,nSections-.5);
+    snprintf(hN,lN,"%s%s",tag,"time");
+    snprintf(hT,lT,"%s;TDC (ns)   ",dN);
+    hs.TDC = new TH2D(hN,hT,128,-63.5,64.5,nSections,-.5,nSections-.5);
+  }
+}
 void recoEvents::SetNSensitiveSurfaces(int nSurfaces)
 {
   if      (nSurfaces!=1 && nSurfaces!=5) {
@@ -1016,8 +1136,8 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
     }
     // ***** LOOP ON (selected subset of) HISTOS
     TH2D *h2s[5] = { hs.phi,hs.th,hs.Z,hs.R,hs.eDep};
-    unsigned int flags[5] = // 0x1: OptStat = 1110, 0x2: Logx, 0x4: Logy
-      /* */        {      0,    0, 0x8, 0x4,    0x3};
+    unsigned int flags[5] = // 0x1: OptStat = 1110, 0x2: Logx, 0x4: Logy Barrel, 0x8: Logy Endcap, 0x10: Integral
+      /* */        {      0,    0, 0x8, 0x4,   0x13};
     if (idet<2) h2s[3] = hs.Rr;
     int ih, jh; for (ih=jh = 0; ih<5 && jh<4; ih++) {
       if (!(0x1<<ih&histoPattern)) continue;
@@ -1033,6 +1153,12 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
       else
 	hproj->SetMinimum(0); // Useful for hs.phi
       if (flags[ih]&0x2) gPad->SetLogx();
+      if (flags[ih]&0x10) {
+	string hPath = string(gDirectory->GetMotherDir()->GetName())+
+	  string("/")+string(gDirectory->GetName());
+	printf("\"%12s/%s\": %5.0f, >%.1f keV: %5.0f\n",hPath.c_str(),hproj->GetName(),
+	       hproj->GetEntries(),eDThresholds[idet],hproj->Integral(65,256));
+      }
       TAxis *ay = hproj->GetYaxis();
       ay->SetNdivisions(505); ay->SetLabelFont(62);
       ay->SetLabelSize(.055); ay->SetLabelOffset(.006);
@@ -1152,7 +1278,7 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
     printf("** DrawResiduals: Invalid <iRec> arg.(=%d): neither 1(=1st coord.) nor 2(=2nd coord.)\n",iRec); return;
   }
   if (!reconstruction) {
-    printf("** DrawphithZR: recoEvents is simulationOnly\n"); return;
+    printf("** DrawResiduals: recoEvents is simulationOnly\n"); return;
   }
   int strip = iRec-1;
   unsigned int pat = processedDetectors&detectorPattern;

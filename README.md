@@ -54,8 +54,9 @@ ana.Loop();
 `ana.DrawResiduals(0x1);`&nbsp;&nbsp;&nbsp; <red>// (RecHit-SimHit) residuals for 0x1:CyMBaL</red>
 
 `new TCanvas("c2D");`<BR>
-`ana.recHs[0].XY->Draw();`  <red>// Draw Y vs. X for RecHits of [0]:CyMBal</red><BR>
-`ana.simHs[4].ZR->Draw();`  <red>// Draw R vs. Z for SimHits of [4]:Vertex</red>
+`ana.recHs[0].XY->Draw();` &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <red>// Draw Y vs. X for RecHits of [0]:CyMBal</red><BR>
+`ana.simHs[4].ZR->Draw();` &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <red>// Draw R vs. Z for SimHits of [4]:Vertex</red><BR>
+`ana.rawHs[1][0].chN->Draw();` <red>// Draw RawHits for of [1]: 2nd coord of [0]:CyMBaL</red>
 
 #### Event control, debugging:
 
