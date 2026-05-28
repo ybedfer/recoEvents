@@ -1965,7 +1965,8 @@ void bDrawHit(double *pars, double *lpos, double *lmom, double path, double *r2s
   box2->DrawLine(rMi2,XMn,rMi2,XMx); box2->DrawLine(rMa2,XMn,rMa2,XMx);
 
   // Draw <lpos>
-  double w = .05;
+  //double w = .05, wh = .025;
+  double w = .025, wh = .0125;
   double Mx = lpos[0], My = lpos[1];
   int orange = kOrange+1, vert = kGreen+2, col = Mx<rMax ? vert : orange;
   TLine *tl = new TLine; tl->SetLineColor(orange);
@@ -1980,7 +1981,8 @@ void bDrawHit(double *pars, double *lpos, double *lmom, double path, double *r2s
   for (int s = -1; s<=+1; s += 2) {
     double Nx = Mx+s*at*Px, Ny = My+s*at*Py;
     tp->DrawLine(Mx,My,Nx,Ny);
-    tp->DrawLine(Nx-w,Ny,Nx+w,Ny); tp->DrawLine(Nx,Ny-w,Nx,Ny+w);
+    //tp->DrawLine(Nx-w,Ny,Nx+w,Ny); tp->DrawLine(Nx,Ny-w,Nx,Ny+w);
+    tp->DrawLine(Nx-wh,Ny-w,Nx+wh,Ny+w); tp->DrawLine(Nx+wh,Ny-w,Nx-wh,Ny+w);
     if (Nx-w<xMn) xMn = Nx-w; if (Ny-w<yMn) yMn = Ny-w;
     if (Nx+w>xMx) xMx = Nx+w; if (Ny+w>yMx) yMx = Ny+w;
 #ifdef DEBUG_DRAWHIT
@@ -2020,7 +2022,8 @@ void AddHit(double *lpos, double *lmom, double path)
 {
   // Draw <lpos>
   //double w = .0125;
-  double w = .025;
+  //double w = .05, wh = .025;
+  double w = .025, wh = .0125;
   int  vert = kGreen+2;
   TLine *tl = new TLine; tl->SetLineColor(vert);
   double Mx = lpos[0], My = lpos[1];
@@ -2033,7 +2036,8 @@ void AddHit(double *lpos, double *lmom, double path)
   for (int s = -1; s<=+1; s += 2) {
     double Nx = Mx+s*at*Px, Ny = My+s*at*Py;
     tp->DrawLine(Mx,My,Nx,Ny);
-    tp->DrawLine(Nx-w,Ny,Nx+w,Ny); tp->DrawLine(Nx,Ny-w,Nx,Ny+w);
+    //tp->DrawLine(Nx-w,Ny,Nx+w,Ny); tp->DrawLine(Nx,Ny-w,Nx,Ny+w);
+    tp->DrawLine(Nx-wh,Ny-w,Nx+wh,Ny+w); tp->DrawLine(Nx+wh,Ny-w,Nx-wh,Ny+w);
   }
 }
 double recoEvents::getCyMBaLRadius(unsigned long cellID)

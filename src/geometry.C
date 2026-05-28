@@ -2,6 +2,8 @@
 #include <TVector3.h>
 #include <TRotation.h>
 
+//#define USE_OLDER_GEOM // From before commit #896b85e80 by Matt
+
 // ********** GEOMETRY
 void recoEvents::initGeometry(int idet, bool hasStrips)
 {
@@ -24,7 +26,11 @@ void recoEvents::initGeometry(int idet, bool hasStrips)
   }
   if (idet==0) {                         // ***** CyMBaL = 2 radii, 4 sections
     const int nSs = 4; nSections[0] = nSs;
+#ifdef USE_OLDER_GEOM
     radii[0].push_back(556.755); radii[0].push_back(578.755);
+#else
+    radii[0].push_back(561.755); radii[0].push_back(583.755);
+#endif
     // <constant name="InnerMPGDBarrel_zmin"            value="1025*mm"/> <comment> negative z </comment>
     // <constant name="InnerMPGDBarrel_zmax"            value="1450*mm"/> <comment> positive z </comment>
     // <constant name="MMOutwardFrameWidth"                    value="5.0*cm"/>
@@ -47,6 +53,7 @@ void recoEvents::initGeometry(int idet, bool hasStrips)
     nChannels[0].push_back(nStripsPhi); nChannels[0].push_back(nStripsZ);
   }
   else if (idet==1) {                    // ***** OUTER
+#ifdef USE_OLDER_GEOM
     radii[1].push_back(737.4650);
     // <constant name="MPGDOuterBarrelModule_zmin1"     value="1795*mm"/>
     // <constant name="MPGDOuterBarrelModule_zmin2"     value="1845*mm"/>
@@ -54,6 +61,17 @@ void recoEvents::initGeometry(int idet, bool hasStrips)
     // <constant name="MPGDOuterBarrelFrame_width"            value="15*mm"/>
     ZAbscissae[1].push_back(-1795+110+15); ZAbscissae[1].push_back(1845-110-15);
     sectionDZs[1].push_back(880); sectionDZs[1].push_back(-830);
+#else
+    // Radius = Distance to REFERENCE subVolume (cellID>>28&0xf)=0x0
+    // Obtained by MasterToLocal transforming (0,0,0) in MPGDTrackerDigi.
+    radii[1].push_back(732.4650);
+    // <constant name="MPGDOuterBarrelModule_zmin1"     value="1925*mm"/>
+    // <constant name="MPGDOuterBarrelModule_zmin2"     value="1675*mm"/>
+    // <constant name="MPGDOuterBarrelModule_PCB_offset"              value="110*mm"/>
+    // <constant name="MPGDOuterBarrelFrame_width"            value="15*mm"/>
+    ZAbscissae[1].push_back(-1925+110+15); ZAbscissae[1].push_back(1675-110-15);
+    sectionDZs[1].push_back(720); sectionDZs[1].push_back(-970);
+#endif
     // <constant name="MPGDOuterBarrelModule_width"                   value="360*mm"/>
     hWidths[1].push_back(180-15);
     ZHLengths[1] = 840;
@@ -192,7 +210,7 @@ void recoEvents::g2lOuter(double X, double Y, double Z, unsigned int module,
   int section = module%2;
   Yr -= sectionDZs[1][section];
   if (section==0) { Xr *= -1; Yr *= -1; }
-  
+
   Vr = (Yr+Xr)/sqrt(2); Ur = (Yr-Xr)/sqrt(2);
   // Local Z is perpendicular to (Xr,Yr)=(Ur,Vr) plane
   // => Rcdphi - distance to beam axis.

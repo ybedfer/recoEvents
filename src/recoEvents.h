@@ -33,6 +33,7 @@ ana.DrawSimHit(3328,0x1,0);  // Draw 0th SimHit of detector 0x1 for evt #3328
 ana.DrawSimHit(3328,0x1,4,1);// Superimpose 4th SimHit
 // Direct access to histograms
 ana.recHs[0][0].ZR[0]; h2->SetTitle("CyMBaL Rec"); h2->Draw(); SetPaveText(h2,0);
+ana.rawHs[1][0].chN->Draw(); // Draw RawHits for [1]: 2nd coord of [0]: CyMBaL
 // ***** SEVERAL recoEvents OBJECTS
 recoEvents ana2(events2,0xf);
 // [...]
@@ -42,7 +43,7 @@ ana2.DrawResiduals(1,0x1,0x6,cCyMBaLRes,3)
 cCyMBaLRes->Print("cCyMBaLRes.pdf","EmbedFonts")
 // ***** Scan
 t->Scan("EventHeader.eventNumber:@MPGDBarrelHits.size():MPGDBarrelHits.cellID&0xffffffff:MPGDBarrelHits.quality:MPGDBarrelHits.cellID>>32:MPGDBarrelHits.momentum.z:@MPGDBarrelRawHits.size():MPGDBarrelRawHits.cellID&0xffffffff:MPGDBarrelRawHits.cellID>>32:@MPGDBarrelRecHits.size():MPGDBarrelRecHits.cellID&0xffffffff","@MPGDBarrelHits.size()","col=3d:2d:8llx:2d:8llx:6.2f:2d:8llx:8llx:2d:8llx",1,1555);
-t->Scan("EventHeader.eventNumber:@OuterMPGDBarrelHits.size():OuterMPGDBarrelHits.cellID&0xffffffff:OuterMPGDBarrelHits.quality:OuterMPGDBarrelHits.cellID>>32:OuterMPGDBarrelHits.momentum.x:OuterMPGDBarrelHits.momentum.y:OuterMPGDBarrelHits.momentum.z:@MCParticles.size():MCParticles[2].MCParticles.PDG","@OuterMPGDBarrelHits.size()","col=4d:2d:8llx:2d:8llx:6.2f:6.2f:6.2f:2d:2d",1,14724);
+t->Scan("EventHeader.eventNumber:@OuterMPGDBarrelHits.size():OuterMPGDBarrelHits.cellID&0xffffffff:OuterMPGDBarrelHits.quality:OuterMPGDBarrelHits.cellID>>32:OuterMPGDBarrelHits.position.x:OuterMPGDBarrelHits.position.y:OuterMPGDBarrelHits.position.z:@MCParticles.size():MCParticles[2].MCParticles.PDG","@OuterMPGDBarrelHits.size()","col=4d:2d:8llx:2d:8llx:6.2f:6.2f:6.2f:2d:2d",1,14724);
 */
 
 #ifndef recoEvents_h
@@ -492,7 +493,7 @@ void recoEvents::Init(TTree *tree)
      for (int idet = 0; idet<N_DETs; idet++) {
        const char *branchNames[N_DETs] = {
 	 "MPGDBarrel","OuterMPGDBarrel","BackwardMPGDEndcap","ForwardMPGDEndcap",
-	 "SiBarrelVertex","SiBarrelTracker"};
+	 "SiBarrelVertex","SiBarrel"};
        const char *branchName = branchNames[idet];
        string name(branchName); name += string("RawHits");
        fChain->SetBranchAddress(name.c_str(),&raws[idet],&rawBranches[idet]);
@@ -1156,7 +1157,7 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
       if (flags[ih]&0x10) {
 	string hPath = string(gDirectory->GetMotherDir()->GetName())+
 	  string("/")+string(gDirectory->GetName());
-	printf("\"%12s/%s\": %5.0f, >%.1f keV: %5.0f\n",hPath.c_str(),hproj->GetName(),
+	printf("\"%13s/%s\": %5.0f, >%.1f keV: %5.0f\n",hPath.c_str(),hproj->GetName(),
 	       hproj->GetEntries(),eDThresholds[idet],hproj->Integral(65,256));
       }
       TAxis *ay = hproj->GetYaxis();
