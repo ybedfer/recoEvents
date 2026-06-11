@@ -64,6 +64,7 @@ t->Scan("EventHeader.eventNumber:@OuterMPGDBarrelHits.size():OuterMPGDBarrelHits
 
 // Header file for the classes stored in the TTree if any.
 #include "vector"
+#include<iostream>
 #include "edm4eic/MCRecoClusterParticleAssociationData.h"
 #include "podio/ObjectID.h"
 #include "edm4eic/ClusterData.h"
@@ -88,6 +89,8 @@ t->Scan("EventHeader.eventNumber:@OuterMPGDBarrelHits.size():OuterMPGDBarrelHits
 #include "edm4hep/MCParticleData.h"
 #include "edm4eic/MCRecoParticleAssociationData.h"
 //#include "edm4hep/TrackerHitData.h"
+
+#include "Geometry.h"
 
 using namespace std;
 using namespace edm4hep;
@@ -232,19 +235,15 @@ public :
    void parseCellID(int idet, unsigned long ID,
 		    unsigned int &module, unsigned int &div, unsigned int &strip);
    bool parseStrip(int idet, int simOrRec, unsigned int &strip);
-   // ***** LOCAL <-> GLOBAL
-   void g2lCyMBaL(double X,   double Y,   double Z, unsigned int div,
-		  double &Xr, double &Yr, double &Zr,
-		  double &Rr, double &phir);
-   void g2lCyMBaL(double Px, double Py, double Pz, unsigned int div,
-		  double *lmom);
-   void l2gCyMBaL(double *lpos, unsigned int div, double *gpos);
-   void g2lOuter(double X, double Y, double Z, unsigned int module,
-		 double &Rcphi, double &Xr, double &Yr, double &Zr,
-		 double &Ur, double &Vr);
-   void g2lOuter(double Px, double Py, double Pz, unsigned int module,
-		 double *lmom);
-   void l2gOuter(double *lpos, unsigned int module, double *gpos);
+   // ***** WORLD <-> LOCAL
+   bool wTol(int idet, unsigned long cellID,
+	     double X,   double Y,   double Z,
+	     double &Xr, double &Yr, double &Zr, int debug = 0);
+   bool wTol(int idet, unsigned long cellID,
+	     double X,   double Y,   double Z,   double Px, double Py, double Pz,
+	     double &Xr, double &Yr, double &Zr, double *lmom, int debug = 0);
+   bool lTow(int idet, unsigned long cellID,
+	     double *lpos, double *gpos);
    // ***** COALESCING/EXTENDING
    bool samePMO(int idet, int ih, int jh);
    bool extrapolate(int idet, int ih, int jh);
@@ -352,6 +351,7 @@ public :
 #ifdef recoEvents_cxx
 recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStrips) : fChain(0) 
 {
+  iObjCreated = -1; // Initialize: <0 value means invalid instatiation
   // Init global settings
   processedDetectors = detectors; verbose = 0; select = 0;
   // ***** SELECTION
@@ -378,6 +378,17 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
     if (!(0x1<<idet&processedDetectors)) continue;
     initGeometry(idet,hasStrips&0x1<<idet);
   }
+  
+   //Geometry
+   try {
+     printf(" * recoEvents::Init: Instantiating Geometry.\n");
+     const char geoFN[] = "recoEvents.geometry.root";
+     new Geometry(geoFN);
+   } catch (const std::runtime_error& error) {
+     cerr << error.what() << endl;
+     return;
+   }
+
   // ***** OBJECT ID
   iObjCreated = nObjCreated++;
   evtToDebug = -1;
@@ -491,9 +502,16 @@ void recoEvents::Init(TTree *tree)
      }
      // ********** RAWHITS
      for (int idet = 0; idet<N_DETs; idet++) {
+       //#define SIBARRELTRACKER
+#ifdef SIBARRELTRACKER
+       const char *branchNames[N_DETs] = {
+	 "MPGDBarrel","OuterMPGDBarrel","BackwardMPGDEndcap","ForwardMPGDEndcap",
+	 "SiBarrelVertex","SiBarrelTracker"};
+#else
        const char *branchNames[N_DETs] = {
 	 "MPGDBarrel","OuterMPGDBarrel","BackwardMPGDEndcap","ForwardMPGDEndcap",
 	 "SiBarrelVertex","SiBarrel"};
+#endif
        const char *branchName = branchNames[idet];
        string name(branchName); name += string("RawHits");
        fChain->SetBranchAddress(name.c_str(),&raws[idet],&rawBranches[idet]);
@@ -1570,4 +1588,37 @@ bool  LayerModules::contains(LayerModules &lm) {
   cCyMBaL1->Print(pdfName.c_str(),"EmbedFonts");
   string pdfName("AllRes.CyMBaL.PR#2177.pdf");
   cCyMBaL1Res->Print(pdfName.c_str(),"EmbedFonts");
+*/
+/*
+TFile *_file0 = TFile::Open("padio.2DS.20.1234.root");
+.L ~/eicA/recoEvents/install/librecoEvents.so 
+TTree *t = (TTree*)gDirectory->Get("events");
+// ***** PDG+PER-MODULE-UNIQUE
+recoEvents ana1(events,0x3f,0x3), *ana = &ana1;
+ana->requirePDG = 13; ana->requireQuality = 2;
+ana->verbose = 0x3000;
+ana->Loop();
+ana->DrawphithZR(0,0x3f,0x1d,1);
+ana->DrawResiduals(1,0x1,0x6);
+ana->DrawResiduals(2,0x1,0x6,cCyMBaLRes,3);
+ana->DrawResiduals(1,0x2,0x6);
+ana->DrawResiduals(2,0x2,0x6,cOuterRes,3);
+// ***** PDG+PER-MODULE-UNIQUE+OFF-BORDER
+recoEvents ana2(events,0x3,0x3), *ana = &ana2;
+ana->requirePDG = 13; ana->requireQuality = 2;
+ana->requireOffBorder = -1;
+ana->verbose = 0x3000;
+ana->Loop();
+ana->DrawphithZR(0,0x3f,0x1d,1);
+ana->DrawResiduals(1,0x1,0x6,cCyMBaLRes,1,2);
+ana->DrawResiduals(2,0x1,0x6,cCyMBaLRes,3,2);
+// ***** PDG
+recoEvents ana3(events,0x3,0x3), *ana = &ana3;
+ana->requirePDG = 13;
+ana->Loop();
+ana->DrawphithZR(0,0x3f,0x1d,1);
+ana->DrawResiduals(1,0x1,0x6);
+ana->DrawResiduals(2,0x1,0x6,cCyMBaL2Res,3);
+ana->DrawResiduals(1,0x2,0x6);
+ana->DrawResiduals(2,0x2,0x6,cOuter2Res,3);
 */

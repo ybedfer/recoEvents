@@ -56,9 +56,9 @@ include(${ROOT_USE_FILE})
 
 # PODIO, EDM4HEP, EDM4EIC event models
 find_package(podio REQUIRED)
-find_package(EDM4HEP 0.7.1 REQUIRED)
+find_package(EDM4HEP REQUIRED)
 message(STATUS "EDM4HEP_ROOT ${EDM4HEP_FOUND} ${EDM4HEP_INCLUDE_DIR}")
-find_package(EDM4EIC 5.0 REQUIRED)
+find_package(EDM4EIC REQUIRED)
 message(STATUS "EDM4EIC_ROOT ${EDM4EIC_FOUND} ${EDM4EIC_INCLUDE_DIR}")
 
 find_package(DD4hep REQUIRED)
