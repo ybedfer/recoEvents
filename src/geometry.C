@@ -35,14 +35,19 @@ void recoEvents::initGeometry(int idet, bool hasStrips)
     // <constant name="InnerMPGDBarrel_zmax"            value="1450*mm"/> <comment> positive z </comment>
     // <constant name="MMOutwardFrameWidth"                    value="5.0*cm"/>
     ZAbscissae[0].push_back(-1025+50); ZAbscissae[0].push_back(1450-50);
-    double dZs[nSs] = {670.0,103.5,-528.5,-1095.0}; // mm
-    for (int section = 0; section<nSs; section++)
-      sectionDZs[0].push_back(dZs[section]);
+    //double dZs[nSs] = {670.0,103.5,-528.5,-1095.0}; // mm
+    //for (int section = 0; section<nSs; section++)
+    //sectionDZs[0].push_back(dZs[section]);
     // <constant name="MMModuleWidth"                          value="46.0*cm"/>
     // Width is converted in angle
+    /*
     // <constant name="MMOuterSector_R"                        value="57.7*cm"/>
     // <constant name="MMInnerSector_R"                        value="55.5*cm"/>
-    double hwidth = 230, rmins[2] = {555,577};
+    */
+    // <constant name="InnerMPGDBarrel_rmin"            value="555*mm"/>
+    // <constant name="MMInnerSection_R"                       value="InnerMPGDBarrel_rmin + 0.5*cm"/>
+    // <constant name="MMOuterSection_R"                       value="MMInnerSection_R + 2.2*cm"/>
+    double hwidth = 230, rmins[2] = {555+5,577+5};
     for (int io = 0; io<2; io++) hWidths[0].push_back(hwidth/rmins[io]);
     // <constant name="MMModuleLength"                         value="61.0*cm"/>
     ZHLengths[0] = 305;
@@ -60,7 +65,7 @@ void recoEvents::initGeometry(int idet, bool hasStrips)
     // <constant name="MPGDOuterBarrelModule_PCB_offset"              value="110*mm"/>
     // <constant name="MPGDOuterBarrelFrame_width"            value="15*mm"/>
     ZAbscissae[1].push_back(-1795+110+15); ZAbscissae[1].push_back(1845-110-15);
-    sectionDZs[1].push_back(880); sectionDZs[1].push_back(-830);
+    //sectionDZs[1].push_back(880); sectionDZs[1].push_back(-830);
 #else
     // Radius = Distance to REFERENCE subVolume (cellID>>28&0xf)=0x0
     // Obtained by MasterToLocal transforming (0,0,0) in MPGDTrackerDigi.
@@ -70,11 +75,12 @@ void recoEvents::initGeometry(int idet, bool hasStrips)
     // <constant name="MPGDOuterBarrelModule_PCB_offset"              value="110*mm"/>
     // <constant name="MPGDOuterBarrelFrame_width"            value="15*mm"/>
     ZAbscissae[1].push_back(-1925+110+15); ZAbscissae[1].push_back(1675-110-15);
-    sectionDZs[1].push_back(720); sectionDZs[1].push_back(-970);
+    //sectionDZs[1].push_back(720); sectionDZs[1].push_back(-970);
 #endif
     // <constant name="MPGDOuterBarrelModule_width"                   value="360*mm"/>
     hWidths[1].push_back(180-15);
-    ZHLengths[1] = 840;
+    // <constant name="MPGDOuterBarrelModule_Inset_length"            value="MPGDOuterBarrelModule_length - MPGDOuterBarrelModule_PCB_offset"/>
+    ZHLengths[1] = ((ZAbscissae[1][1]-ZAbscissae[1][0])/2-15/*InnerFrame*/)/2;
     //<constant name="MPGDOuterBarrelPitch"                        value = "800*um" />
     double outerPitch = 800; pitches[1].push_back(outerPitch/1000);
     // <constant name="MPGDOuterBarrelnStrips"                      value = "1792" />
@@ -90,12 +96,10 @@ void recoEvents::initGeometry(int idet, bool hasStrips)
       ZAbscissae[2].push_back(-1075); ZAbscissae[2].push_back(-1075-125);
     }
     else {
-      // <constant name="ForwardMPGD_zmin"             value="1500.0*mm"/>
+      // <constant name="ForwardMPGD_zmin"             value="1285.0*mm"/>
       // <constant name="ForwardMPGDMod_offset"        value="125.0*mm"/>
-      ZAbscissae[3].push_back( 1500); ZAbscissae[3].push_back( 1500+125);
+      ZAbscissae[3].push_back( 1285); ZAbscissae[3].push_back( 1285+125);
     }
-    double f_rmin = 70, f_rmax = 400;
-    radii[3].push_back(f_rmin); radii[3].push_back(f_rmax);
   }
   else if (idet==4) {
     // <constant name="VertexBarrel_rmin"               value="3.6*cm"/>

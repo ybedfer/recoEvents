@@ -1436,11 +1436,11 @@ void recoEvents::SetMinima(double min)
 LayerModules::LayerModules(int idet, unsigned long cellID) {
   int num, index;
   if        (idet==2|| idet==3) {
-    index = (cellID>>8&0x3)-1; num = cellID>>10&0x3f;
+    index = cellID>>8&0x3; num = cellID>>10&0x3f;
   } else if (idet==0 || idet==1) {
-    index = 0;                 num = cellID>>12&0xfff;
+    index = 0;             num = cellID>>12&0xfff;
   } else if (idet==4) { // Vertex: 1920 modules (at most) => divide by 32
-    index = (cellID>>8&0xf);   num = cellID>>12&0xfff; num /= 32;
+    index = cellID>>8&0xf; num = cellID>>12&0xfff; num /= 32;
   }
   else if (idet==5) { // Si: 2 systemIDs: 0x3b and 0x3c; sublayer = module parity
     /* */                      num = cellID>>12&0xfff;
