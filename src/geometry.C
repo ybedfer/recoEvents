@@ -141,3 +141,240 @@ void recoEvents::initGeometry(int idet, bool hasStrips)
     resolutions[idet] = 0; // Not yet set...
   }
 }
+bool recoEvents::parseGeometry()
+{
+  Geometry *geo = Geometry::Ptr();
+  if (!geo) {
+    printf("** parseGeometry: No access to geometry\n");
+    return false;
+  }
+
+  const char *shapes[Geometry::N_MPGDs] = {"TGeoTubeSeg","TGeoBBox","TGeoTrd2","TGeoTrd2"};
+
+  // LOOP ON MPGDs
+  printf("+++++++++++++++++ Parsing %d MPGDs\n",Geometry::N_MPGDs);
+  int mpgd; unsigned int error; for (mpgd = 0, error = 0; mpgd<Geometry::N_MPGDs; mpgd++) {
+    if (!(0x1<<mpgd&processedDetectors)) continue;
+    {
+      vector<vector<const TGeoVolume*>> &geoVols = geo->geoDetVols[mpgd];
+      vector<vector<TGeoHMatrix>>       &geoMats = geo->geoDetMats[mpgd];
+      vector<vector<double>>            &geoGaps = geo->geoDetGaps[mpgd];
+      using Module2StaveType = map<int,int>;
+      Module2StaveType &module2StaveType = module2StaveTypes[mpgd];
+      // Init mpgd
+      using VolumeMap = map<const char*,pair<const TGeoVolume*,int>>;
+      VolumeMap volumeMap;
+      NLayers[mpgd] = geoVols.size(); if ((int)geoMats.size()!=NLayers[mpgd]) {
+	printf("** parseGeometry: MPGD 0x%x Inconsistency: geoMats/geoVols differ in size: %d/%d\n",
+	       0x1<<mpgd,(int)geoMats.size(),NLayers[mpgd]);
+	error = 0x1; break;
+      }
+      const char *shape = shapes[mpgd];
+      // Init mpgd
+      ZExtrema[mpgd][0] = 1e6; ZExtrema[mpgd][1] = -1e6;
+      NModules[mpgd] = 0;
+      int modulesPerSection = 0, firstSection = 1;
+      int prvNModules = -1;
+      // ***** LOOP ON LAYERS,modules
+      for (int layer = 0; layer<NLayers[mpgd]; layer++) {
+	vector<const TGeoVolume*> gVols = geoVols[layer];
+	vector<TGeoHMatrix> &gMats = geoMats[layer];
+	vector<double> &gGaps = geoGaps[layer];
+	int nLayerModules = gVols.size(); if ((int)gMats.size()!=nLayerModules) {
+	  printf("** parseGeometry: MPGD 0x%x Inconsistency: gMats/gVols[%d] differ in size: %d/%d\n",
+		 0x1<<mpgd,layer,(int)gMats.size(),nLayerModules);
+	  error |= 0x2; break;
+	}
+	if (prvNModules>=0 && nLayerModules!=prvNModules) {
+	  printf("** parseGeometry: Unforeseen configuration: Varying #modules per Layer: %d in layer %d != %d in layer %d\n",
+		 prvNModules,layer-1,nLayerModules,layer);
+	  error |= 0x10; break;
+	}
+	NModules[mpgd] = nLayerModules;
+	for (int module = 0; module<nLayerModules; module++) {
+	  const TGeoVolume *v = gVols[module]; const TGeoShape *s = v->GetShape();
+	  if (strcmp(s->ClassName(),shape)) {
+	    printf("** parseGeometry: MPGD 0x%x Inconsistency: Volume of Layer,Module %d,%d not a \"%s\"\n",
+		   0x1<<mpgd,layer,module,shapes[mpgd]);
+	    error = 0x4; break;
+	  }
+	  // ***** STAVETYPE (i.e. distinct volume shape)
+	  //       SECTION
+	  // - New staveType/section? Then map module2StaveType.
+	  int newStaveType, staveType;
+	  const char *sN = s->GetName();
+	  VolumeMap::const_iterator iv = volumeMap.find(sN);
+	  if (iv==volumeMap.end()) {
+	    newStaveType = 1;
+	    staveType = volumeMap.size(); volumeMap[sN] = {v,staveType};
+	  }
+	  else {
+	    newStaveType = 0;
+	    staveType = iv->second.second;
+	  }
+	  module2StaveType[module] = staveType;
+	  // # of modules per Section
+	  if (firstSection) modulesPerSection++;
+	  if (newStaveType) firstSection = 0; // Finalise # of modules par section
+	  //*****  mpgd SPECIFICS
+	  const TGeoHMatrix &m = gMats[module]; double gap = gGaps[module];
+	  if (mpgd==0) {
+	    if (newStaveType) {
+	      // CyMBaL: Parse TGeoTubeseg
+	      const TGeoTubeSeg *tube = dynamic_cast<const TGeoTubeSeg*>(s);
+	      if (!tube) { error |= 0x4+16*module; break; }
+	      double startPhi = tube->GetPhi1(), endPhi = tube->GetPhi2();
+	      // In "https://root.cern.ch/root/html534/guides/users-guide/Geometry.html"
+	      // TGeoTubeSeg: "phi1 is converted to [0,360] and phi2 > phi1."
+	      // => Convert it to [-pi,+pi].
+	      startPhi *= TMath::Pi()/180; endPhi *= TMath::Pi()/180;
+	      startPhi -= 2 * TMath::Pi(); endPhi -= 2 * TMath::Pi();
+	      if (fabs(startPhi+endPhi)>1e-6) {
+		printf("** Traverse: CyMBaL Module %d Inconsistency: |startPhi|(%.6f) != endPhi(%.6f)\n",
+		       module,startPhi,endPhi);
+		error = 0x8; 
+	      }
+	      HWidths[mpgd].push_back(-startPhi);
+	      double rMin = tube->GetRmin()*10, rMax = tube->GetRmax()*10; // in mm
+	      double R = (rMin+rMax)/2; Radii[mpgd].push_back(R);
+	      double dZ = tube->GetDz()*10; /* in mm */ zHLengths[mpgd] = dZ;
+	    }
+	    double R = Radii[mpgd][staveType], hW = HWidths[mpgd][staveType];
+	    // CyMBaL: Parse TGeoHMatrix
+	    double dZ = zHLengths[mpgd];
+	    double Z = m.GetTranslation()[2]; Z += Z>0 ? +dZ : -dZ;
+	    if (Z<ZExtrema[mpgd][0]) ZExtrema[mpgd][0] = Z;
+	    if (Z>ZExtrema[mpgd][1]) ZExtrema[mpgd][1] = Z;
+	    /*
+	    printf("CyMBal: L,M %d,%-2d: hW %.4f rad. R %.3f Z [%.1f,%.1f] dZ %.1f G %.2f mm Stave %d/%d MpS %d\n",
+	           layer,module,hW,R,
+		   ZExtrema[mpgd][0],ZExtrema[mpgd][1],dZ,gap,
+		   staveType,(int)volumeMap.size(),modulesPerSection);
+	    */
+	  }
+	  else if (mpgd==1) {
+	    if (newStaveType) {
+	      // Outer: Parse TGeoBBox
+	      const TGeoBBox *box = dynamic_cast<const TGeoBBox*>(s);
+	      if (!box) { error |= 0x4+16*module; break; }
+	      double dX = box->GetDX()*10; HWidths[mpgd].push_back(dX);
+	      double dY = box->GetDY()*10; zHLengths[mpgd] = dY;
+	      double dZ = box->GetDZ()*10;
+	    }
+	    // Outer: Parse TGeoHMatrix
+	    double dY = zHLengths[mpgd];
+	    double Z = m.GetTranslation()[2]; Z += Z>0 ? +dY : -dY;
+	    double X = m.GetTranslation()[0], Y = m.GetTranslation()[1];
+	    double R = sqrt(X*X+Y*Y);
+	    double hW = HWidths[mpgd][staveType];
+	    if (newStaveType) Radii[mpgd].push_back(R);
+	    if (Z<ZExtrema[mpgd][0]) ZExtrema[mpgd][0] = Z;
+	    if (Z>ZExtrema[mpgd][1]) ZExtrema[mpgd][1] = Z;
+	    /*
+	    printf("Outer: L,M %d,%-2d: hW %.3f R %.3f Z [%.1f,%.1f] dZ %.1f G %.2f mm Stave %d/%d\n",
+		   layer,module,hW,R,
+		   ZExtrema[mpgd][0],ZExtrema[mpgd][1],dY,gap,staveType,(int)volumeMap.size());
+	    */
+	  }
+	  else {
+	    // Endcap: Parse TGeoTrd2
+	    const TGeoTrd2 *trd2 = dynamic_cast<const TGeoTrd2*>(s);
+	    if (!trd2) { error |= 0x4+16*module; break; }
+	    double dX1 = trd2->GetDx1()*10, dX2 = trd2->GetDx2()*10;
+	    //double dY1 = trd2->GetDy1()*10, dY2 = trd2->GetDy2()*10; already known: its the gap
+	    double dZ = trd2->GetDZ()*10;	    
+	    // Endcap: Parse TGeoTrd2
+	    double X = m.GetTranslation()[0], Y = m.GetTranslation()[1];
+	    double R = 2*dZ+sqrt(X*X+Y*Y);
+	    double Z = m.GetTranslation()[2];
+	    if (Z<ZExtrema[mpgd][0]) ZExtrema[mpgd][0] = Z;
+	    if (Z>ZExtrema[mpgd][1]) ZExtrema[mpgd][1] = Z;
+	    if (newStaveType) {
+	      double rMin = R-dZ, rMax = R+dZ;
+	      Radii[mpgd].push_back(rMin); Radii[mpgd].push_back(rMax);
+	    }
+	    /*
+	    printf("Endcap: L,M %d,%-2d %.3f/%.3f %.3f R %.3f [%.3f,%.3f] Z [%.3f,%.3f] G %.2f mm Stave %d/%d <%s>\n",
+		   layer,module,dX1,dX2,dZ,R,R-dZ,R+dZ,
+		   ZExtrema[mpgd][0],ZExtrema[mpgd][1],gap,staveType,(int)volumeMap.size(),sN);
+	    */
+	  }
+	}
+	if (error&0x4) {
+	  int module = error>>4;
+	  printf("** parseGeometry: MPGD 0x%x Inconsistency: Volume of Layer,Module %d,%d can't be cast into a \"%s\"\n",
+		 0x1<<mpgd,layer,module,shapes[mpgd]);
+	}
+      }
+      if (error) return false;
+    }
+  } // End loop on mpgds
+  // ***** COMPARISON
+  double diff;
+  for (mpgd = 0; mpgd<Geometry::N_MPGDs; mpgd++) {
+    if (!(0x1<<mpgd&processedDetectors)) continue;
+    printf("===+==+==== %d\n",mpgd);
+    using Module2StaveType = map<int,int>;
+    Module2StaveType &module2StaveType = module2StaveTypes[mpgd];
+    int verbose = mpgd==5;
+    for (int ud = 0; ud<2; ud++) {
+      double ZAbscissa = ZAbscissae[mpgd][ud];
+      double ZExtremum = ZExtrema  [mpgd][ud];
+      diff = fabs(ZAbscissa-ZExtremum); if (diff>1.e-6 || verbose) {
+	printf("%d ZExtremum %.6f ZAbscissa %.6f %.6f\n",
+	       ud,ZExtremum,ZAbscissa,diff);
+      }
+    }
+    // # of layers
+    int NLayer = NLayers[mpgd],  nLayer = nLayers[mpgd];
+    if (NLayer!=nLayer) {
+      printf("#Layers(%d) != #layers(%d)\n",NLayer,nLayer);
+    }
+    // # of modules
+    int NModule = NModules[mpgd],  nModule = nModules[mpgd];
+    if (NModule!=nModule) {
+      printf("#Modules(%d) != #modules(%d)\n",NModule,nModule);
+    }
+    // # of radii
+    int nrs = radii[mpgd].size(), nRs = Radii[mpgd].size();
+    if (nRs!=nrs) {
+      printf("#Radii(%d) != #radii(%d)\n",nRs,nrs);
+    }
+    // radii
+    for (int module = 0; module<(NModule<nModule?NModule:nModule); module++) {
+      unsigned long cellID = (mpgd==2 || mpgd==3) ? (module<<10) : (module<<12);
+      int Type = GetStaveType(mpgd,cellID), type = getStaveType(mpgd,cellID);
+      double Radius = Radii[mpgd][Type];
+      double radius = radii[mpgd][type];
+      diff = fabs(Radius-radius); if (diff>1.e-3 || verbose) {
+	printf("%d:%d/%d Radius %.6f radius %.6f %.6f\n",
+	       module,Type,type,Radius,radius,diff);
+	break;
+      }
+    }
+    // # of hWidths
+    int nHWs = HWidths[mpgd].size(), nhWs = hWidths[mpgd].size();
+    if (nHWs!=nhWs) {
+      printf("#HWidths(%d) != #hWidths(%d)\n",nHWs,nhWs);
+    }
+    if (mpgd>=2) continue;
+    // hWidths
+    for (int module = 0; module<(NModule<nModule?NModule:nModule); module++) {
+      unsigned long cellID = (mpgd==2 || mpgd==3) ? (module<<10) : (module<<12);
+      int Type = GetStaveType(mpgd,cellID), type = getStaveType(mpgd,cellID);
+      double HWidth = HWidths[mpgd][Type];
+      double hWidth = hWidths[mpgd][type];
+      diff = fabs(HWidth-hWidth); if (diff>1.e-6 || verbose) {
+	printf("%d:%d/%d HWidth %.6f hWidth %.6f %.6f\n",
+	       module,Type,type,HWidth,hWidth,diff);
+	break;
+      }
+    }
+    double zHLength = zHLengths[mpgd], ZHLength = ZHLengths[mpgd];
+    diff = fabs(zHLength-ZHLength); if (diff>1.e-6 || verbose) {
+      printf("zHLength %.6f ZHLength %.6f %.6f\n",
+	     zHLength,ZHLength,diff);
+    }
+  }
+  return true;
+}

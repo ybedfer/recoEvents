@@ -117,24 +117,28 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	    }
 	    else break;
 	  }
-	}
-	if (coalesced.size()<2) {
-	  if (hit.quality==0 &&
-	      (0x1<<idet&stripMode)) { // Extend to edge of pathLength
-	    SimTrackerHitData hext; extend(idet,ih,hext);
-	    hext.momentum = hit.momentum;
-	    coalescedHs.push_back(hext);
+	  if (coalesced.size()<2) {
+	    if (hit.quality==0 &&
+		(0x1<<idet&stripMode)) { // Extend to edge of pathLength
+	      SimTrackerHitData hext; extend(idet,ih,hext);
+	      hext.momentum = hit.momentum;
+	      coalescedHs.push_back(hext);
+	    }
+	    else // Do not extend secondary: its position is, a priori, well
+	      // represented by its SimTrackerHit position.
+	      coalescedHs.push_back(hit);
+	    sim2coa[ih] = nCoaHs;
 	  }
-	  else // Do not extend secondary: its position is, a priori, well
-	    // represented by its SimTrackerHit position.
-	    coalescedHs.push_back(hit);
-	  sim2coa[ih] = nCoaHs;
+	  else {
+	    SimTrackerHitData hext; if (!coalesce(idet,coalesced,hext)) return;
+	    hext.momentum = hit.momentum;
+	    sim2coa[ih] = nCoaHs; coalescedHs.push_back(hext);
+	    ih += coalesced.size()-1;
+	  }
 	}
 	else {
-	  SimTrackerHitData hext; if (!coalesce(idet,coalesced,hext)) return;
-	  hext.momentum = hit.momentum;
-	  sim2coa[ih] = nCoaHs; coalescedHs.push_back(hext);
-	  ih += coalesced.size()-1;
+	  coalescedHs.push_back(hit);
+	  sim2coa[ih] = nCoaHs;
 	}
 	updateDetEvent(idet,ih);
       }
@@ -480,7 +484,7 @@ bool recoEvents::fillResids(int idet, int ih, int ir)
       // - Print outliers, i.e. when residuals > expectation
       // - Expectation depends upon whether we are on/off edge
       unsigned int onBorder = isOnBorder(idet,cellID,Xs,Ys,Zs);
-      double resCut = getResCut(idet,module,strip,onBorder&0x1<<strip);
+      double resCut = getResCut(idet,cellID,strip,onBorder&0x1<<strip);
       unsigned int dbg = 0; double RdphiMx = .24e6, dZMx = ZHLengths[0]*1000;
       if (strip==0 && fabs(dphir)>resCut || strip==1 && fabs(dZ)>resCut)
 	dbg |= 0x1<<strip;
@@ -522,7 +526,7 @@ bool recoEvents::fillResids(int idet, int ih, int ir)
     //rs.xyr->Fill(Xrs,Yrs,strip?dUr:dVr);
     if (debugIsBooked(0x1000)) { // Conditioning the execution of the somewhat lengthy "isOnBorder"
       unsigned int onBorder = isOnBorder(idet,cellID,Xs,Ys,Zs);
-      double resCut = getResCut(idet,module,strip,onBorder&0x1<<strip);
+      double resCut = getResCut(idet,cellID,strip,onBorder&0x1<<strip);
       unsigned int dbg = 0; double dMx = .75e6;
       if (strip==0 && fabs(dU)>resCut || strip==1 && fabs(dV)>resCut)
 	dbg |= 0x1<<strip;
@@ -578,7 +582,8 @@ unsigned int recoEvents::isOnBorder(int idet, unsigned long cellID,
     double phil = atan2(Yl,Xl);
     for (int strip = 0; strip<2; strip++) {
       if (strip==0) {
-	int section = module/8; int staveType = (section==1 || section==2)?0:1;
+	//int section = module/8; int staveType = (section==1 || section==2)?0:1;
+	int staveType = getStaveType(0,cellID);
 	double radius = radii[0][staveType];    
 	double hWidth = hWidths[0][staveType], phiPitch = pitches[0][staveType]/radius;
 	if (phil<-hWidth+phiPitch/2 || phil>hWidth-phiPitch/2)
@@ -603,13 +608,15 @@ unsigned int recoEvents::isOnBorder(int idet, unsigned long cellID,
   //else: nothing done for non-MPGDs
   return onBorder;
 }
-double recoEvents::getResCut(int idet, int module, int strip, bool onBorder)
+double recoEvents::getResCut(int idet, unsigned long cellID, int strip, bool onBorder)
 {
   // Returns in µm or mrd for CyMBaL phi
+  //int module = (idet==2|| idet==3) ? ID>>10&0x3f : ID>>12&0xfff;
   double resCut;
   if (idet==0) {
     if (strip==0) {
-      int section = module/8; int staveType = (section==1 || section==2)?0:1;
+      //int section = module/8; int staveType = (section==1 || section==2)?0:1;
+      int staveType = getStaveType(0,cellID);
       double radius = radii[0][staveType];
       double phiPitch = pitches[0][0]/radius;
       resCut = onBorder ? 1000*phiPitch/2 : 3*resolutions[0]/radius; // in mrd
@@ -648,7 +655,8 @@ bool recoEvents::crossEdge(int idet, const SimTrackerHitData &hit)
   if (idet==0) {
     // Volume parameters
     unsigned int module, div, strip; parseCellID(idet,cID,module,div,strip);
-    int section = div>>3, staveType = section==1 || section==2 ? 0 : 1;
+    //int section = div>>3, staveType = section==1 || section==2 ? 0 : 1;
+    int staveType = getStaveType(0,cID);
     double endPhi = hWidths[0][staveType], startPhi = -endPhi;
     double dZ = ZHLengths[0];
     // Loop on extending to inner/outer volume walls
@@ -891,8 +899,9 @@ bool recoEvents::extrapolate(int idet, int ih, int jh)
 	// Try and rescue cases where traversing to one side.
 	double Rr = ij==0 ? depth : dfpth;
 	bool is0x3 = subVolID==0x3 || subVolJD==0x3;
-	int module = hit.cellID>>12&0xfff;
-	int section = module/8; int staveType = (section==1 || section==2)?0:1;
+	//int module = hit.cellID>>12&0xfff;
+	//int section = module/8; int staveType = (section==1 || section==2)?0:1;
+	int staveType = getStaveType(0,hit.cellID);
 	double midPlane = radii[0][staveType];
 	bool isInner = is0x3 ? Rr > midPlane : Rr < midPlane;
 	if (isInner) continuation |= 0x4<<ij;
@@ -1065,8 +1074,9 @@ void recoEvents::extend(int idet, int ih, SimTrackerHitData &hext)
 	       cID&0xffffffff,cID>>32,doExtend,pathDepth,Rr);
       if (!doExtend) {
 	// Try and rescue cases where traversing to one side.
-	int module = cID>>12&0xfff;
-	int section = module/8; int staveType = (section==1 || section==2)?0:1;
+	//int module = cID>>12&0xfff;
+	//int section = module/8; int staveType = (section==1 || section==2)?0:1;
+	int staveType = getStaveType(0,cID);
 	double midPlane = radii[0][staveType];
 	bool isInner = subVolID==0x3 ? Rr > midPlane : Rr < midPlane;
 	doExtend = isInner;
@@ -1402,9 +1412,10 @@ bool recoEvents::extendHit(int idet, int ih, int direction, double *gext)
   double lmom[3]; wTol(idet,cID,Mx,My,Mz,Px,Py,Pz,Xl,Yl,Zl,lmom);
   if (idet==0) {
     double Rr = sqrt(Xl*Xl+Yl*Yl);
-    unsigned int module, div, strip; parseCellID(idet,cID,module,div,strip);
+    //unsigned int module, div, strip; parseCellID(idet,cID,module,div,strip);
     // Limitations
-    int section = div>>3, staveType = section==1 || section==2 ? 0 : 1;
+    //int section = div>>3, staveType = section==1 || section==2 ? 0 : 1;
+    int staveType = getStaveType(0,cID);
     double endPhi = hWidths[0][staveType], startPhi = -endPhi;
     double dZ = ZHLengths[0];
     // Target = extreme edge of counterpart SUBVOLUME.
@@ -1759,8 +1770,9 @@ void recoEvents::DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
       // Pathlength
       double path = hit.pathLength/10;
       // Parameters
-      unsigned int module, div, strip; parseCellID(idet,cID,module,div,strip);
-      int section = div>>3, staveType = section==1 || section==2 ? 0 : 1;
+      //unsigned int module, div, strip; parseCellID(idet,cID,module,div,strip);
+      //int section = div>>3, staveType = section==1 || section==2 ? 0 : 1;
+      int staveType = getStaveType(0,cID);
       double r0 = radii[0][staveType], rMin, rMax;
       rMin = r0-volumeThicknesses[0]/2;
       rMax = r0-volumeThicknesses[0]/2+radiatorThicknesses[0];
@@ -2035,8 +2047,9 @@ void AddHit(double *lpos, double *lmom, double path)
 }
 double recoEvents::getCyMBaLRadius(unsigned long cellID)
 {
-  int module = cellID>>12&0xfff;
-  int section = module/8; int staveType = (section==1 || section==2)?0:1;
+  //int module = cellID>>12&0xfff;
+  //int section = module/8; int staveType = (section==1 || section==2)?0:1;
+  int staveType = getStaveType(0,cellID);
   return radii[0][staveType];
 }
 bool recoEvents::wTol(int idet, unsigned long cellID, double X, double Y, double Z,

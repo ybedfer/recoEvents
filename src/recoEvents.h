@@ -185,12 +185,20 @@ public :
    vector<double> radii[N_DETs];      // in mm
    vector<double> ZAbscissae[N_DETs]; // in mm
    int nSections[N_DETs];
-   vector<double> sectionDZs[N_DETs]; // Transform global -> local
+   map<int,int> module2StaveTypes[N_DETs];
+   int getStaveType(int idet, unsigned long cellID);
+   int GetStaveType(int idet, unsigned long cellID);
    vector<double> hWidths[N_DETs];    // HalfWidths
    double ZHLengths[N_DETs];          // HalfLengths
    vector<double> pitches[N_DETs];    // pitch in mm
    double gains[N_DETs], eDThresholds[N_DETs], resolutions[N_DETs];
    vector<int> nChannels[N_DETs];
+    // Temporary placeholders
+   double ZExtrema[N_DETs][2];
+   vector<double> Radii[N_DETs];
+   vector<double> HWidths[N_DETs];
+   double zHLengths[N_DETs];
+   int NLayers[N_DETs], NModules[N_DETs];
 
    // ***** SELECTION
    TTreeFormula *select; // Provides for specifying a rejection cut.
@@ -232,7 +240,7 @@ public :
    void fillHit(int iSimRec, int idet,
 		double X, double Y, double Z, double E, unsigned long cellID);
    bool fillResids(int idet, int ih, int ir);
-   double getResCut(int idet, int module, int strip, bool onBorder);
+   double getResCut(int idet, unsigned long cellID, int strip, bool onBorder);
    void parseCellID(int idet, unsigned long ID,
 		    unsigned int &module, unsigned int &div, unsigned int &strip);
    bool parseStrip(int idet, int simOrRec, unsigned int &strip);
@@ -334,6 +342,7 @@ public :
    virtual void     Show(Long64_t entry = -1);
 
    void initGeometry(int idet, bool hasStrips);
+   bool parseGeometry();
    double getCyMBaLRadius(unsigned long cellID);
 
    // ***** Data members not to be modified from command line:
@@ -380,15 +389,16 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
     initGeometry(idet,hasStrips&0x1<<idet);
   }
   
-   //Geometry
-   try {
-     printf(" * recoEvents::Init: Instantiating Geometry.\n");
-     const char geoFN[] = "recoEvents.geometry.root";
-     new Geometry(geoFN);
-   } catch (const std::runtime_error& error) {
-     cerr << error.what() << endl;
-     return;
-   }
+  //Geometry
+  try {
+    printf(" * recoEvents::Init: Instantiating Geometry.\n");
+    const char geoFN[] = "recoEvents.geometry.root";
+    new Geometry(geoFN);
+  } catch (const std::runtime_error& error) {
+    cerr << error.what() << endl;
+    return;
+  }
+  parseGeometry();
 
   // ***** OBJECT ID
   iObjCreated = nObjCreated++;
@@ -1402,6 +1412,28 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
   }
   gStyle->SetStatFormat(prvFormat.c_str());
   dSave->cd();
+}
+int recoEvents::getStaveType(int idet, unsigned long cellID)
+{
+  if (idet==0) {
+    int module = (idet==2 || idet==3) ? cellID>>10&0x3f : cellID>>12&0xfff;
+    int section = module/8;
+    if (section<0 || 3<section) {
+      printf("** getStaveType: %d,0x%lx -> section %d\n",idet,cellID,section);
+      return -1;
+    }
+    return (section==1 || section==2) ? 0 : 1;
+  }
+  else
+    return 0;
+}
+int recoEvents::GetStaveType(int idet, unsigned long cellID)
+{
+  int module = (idet==2 || idet==3) ? cellID>>10&0x3f : cellID>>12&0xfff;
+  map<int,int> &module2StaveType = module2StaveTypes[idet];
+  map<int,int>::const_iterator im = module2StaveType.find(module);
+  if (im==module2StaveType.end()) return -1;
+  else return im->second;
 }
 #include "TPaveText.h"
 #include "TPaveStats.h"

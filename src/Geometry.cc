@@ -7,7 +7,7 @@ Geometry::Geometry(const char *geoFN, int verbose)
 {
   // ***** CONSTRUCTOR
   // - Explore the TGeometry to:
-  //  i) Determine which of the MPGDs are 2DStrip (in fact what's what's rather
+  //  i) Determine which of the MPGDs are 2DStrip (in fact what's rather
   //    determined is whether they have MultipleSensitiveVolume, which as of
   //    2026/04, is the only way MPGDs can be 2DStrip).
   // => Stored in data member "MPGD2DStrips"
@@ -71,15 +71,20 @@ bool findLayersModules(int LM,       // 0: Layer, 1: Module
 		       int verbose,
 		       vector<string>& targetNodes);
 bool findDriftGap(const char *modulePath, int verbose,
-		  const TGeoHMatrix *&m, bool &isMSV);
+		  const TGeoHMatrix *&m, const TGeoVolume *&v,
+		  bool &isMSV, double &totalGap);
 bool Geometry::getGeoMats(int mpgd, bool &isFullyMSV)
 {
   // 
 
   isFullyMSV = true;
 
-  vector<vector<TGeoHMatrix>> &geoMats = geoDetMats[mpgd];
-
+  vector<vector<TGeoHMatrix>>       &geoMats = geoDetMats[mpgd];
+  vector<vector<const TGeoVolume*>> &geoVols = geoDetVols[mpgd];
+  vector<vector<double>>            &geoGaps = geoDetGaps[mpgd];
+  
+  using VolumeMap = map<const char*,const TGeoVolume*>;
+  VolumeMap volumeMap;
   const char *tag1 = tag1s[mpgd], *tag2 = tag2s[mpgd];
   vector<string> layerNodes;
   string path("/"); gGeoManager->CdTop();
@@ -102,13 +107,17 @@ bool Geometry::getGeoMats(int mpgd, bool &isFullyMSV)
       if (verboseLevel>1)
 	printf("\"%s%c%s\", Layer %d: Found %d Modules: \n",
 	       tag1,tag2?',':'\0',tag2?tag2:"\0",layer,nModules);
-      vector<TGeoHMatrix> gMats;
+      vector<TGeoHMatrix> gMats; vector<const TGeoVolume*> gVols;
+      vector<double> gGaps;
       for (int module = 0; module<nModules; module++) {
 	const char *modulePath = moduleNodes[module].c_str();
 	if (verboseLevel>1)
 	  printf("%2d/%2d: \"%s\"\n",module,nModules,modulePath);
-	const TGeoHMatrix *m = 0; bool isMSV = false;
-	if (findDriftGap(modulePath,verboseLevel,m,isMSV)) {
+	const TGeoHMatrix *m = 0;
+	const TGeoVolume *v = 0;
+	bool isMSV = false; double gap = -1;
+	if (findDriftGap(modulePath,verboseLevel,m,v,isMSV,gap)) {
+	  // Matrices
 	  // cm -> mm
 	  TGeoHMatrix mmm(*m);
 	  const double *trcm = mmm.GetTranslation(); double trmm[3];
@@ -116,6 +125,22 @@ bool Geometry::getGeoMats(int mpgd, bool &isFullyMSV)
 	  mmm.SetTranslation(trmm);
 	  gMats.push_back(mmm);
 	  isFullyMSV &= isMSV;
+	  // Volumes
+	  const TGeoShape *s = v->GetShape();
+	  const char *sN = s->GetName();
+	  //printf("+++ %s,%p: %s %f",v->GetName(),v,v->GetShape()->ClassName(),gap);
+	  VolumeMap::const_iterator in = volumeMap.find(sN);
+	  const TGeoVolume *vp; if (in==volumeMap.end()) {
+	    //TGeoVolume *vA = v->CloneVolume();
+	    vp = v; volumeMap[sN] = vp;
+	    //printf(" NEW");
+	  }
+	  else
+	    vp = in->second;
+	  //printf("\n");
+	  gVols.push_back(vp);
+	  // TotalThickness
+	  gGaps.push_back(gap);
 	}
 	else {
 	  if (verboseLevel) 
@@ -123,7 +148,8 @@ bool Geometry::getGeoMats(int mpgd, bool &isFullyMSV)
 		   modulePath);
 	}
       }
-      geoMats.push_back(gMats);
+      geoMats.push_back(gMats); geoVols.push_back(gVols);
+      geoGaps.push_back(gGaps);
     }
   }
   if (!ok) {
@@ -227,15 +253,31 @@ bool findLayersModules(int LM, string &path,
   return !targetNodes.empty();
 }
 bool findDriftGap(const char *modulePath, int verbose,
-		  const TGeoHMatrix *&m, bool &isMSV)
+		  const TGeoHMatrix *&m, const TGeoVolume *&v,
+		  bool &isMSV, double &totalGap)
 {
-  // Return TGeoHMatrix of World-to-Local of Reference SubVolume, which name
-  // is assumed to be "ReferenceThinGap".
+  // Return TGeoHMatrix of World-to-Local and TGeoVolume of Reference Sensitive
+  // Volume, which name is assumed to be:
+  // - either "ReferenceThinGap", case of the MultipleSensitiveVolume type,
+  // - or, else, "DriftGap.
+  // Also returned:
+  // i) Whether input module is of the MSV type, i.e. fulfills:
+  //   - sudivision into 5 "ThinGap" or "Radiator".
+  //   - one of which is "ReferenceThinGap".
+  // ii) totalGap.
   if (!gGeoManager->cd(modulePath)) {
     printf("** findDriftGap: Bad input path \"%s\"\n",
 	   modulePath);
     return false;
   }
+  // Determine whether module is of the MultipleSensitiveVolume type.
+  isMSV = false; int nMSVs = 0;
+  // Determine total gap, spanning all the MSVs.
+  // - The answer depends upon Volume's type of shape.
+  totalGap = -1; // Init w/ unphysical value
+  double rMinMin = 1e6, rMaxMax = 0; // Extrema extremorum for CyMBaL/TGeoTubeSeg
+  double gapSum = 0;           // Gap sum for Outer/TGeoBBox
+  // Loop on subNodes
   TGeoNode *node = gGeoManager->GetCurrentNode();
   const TObjArray* subNodeArray = node->GetNodes();
   TObject *o = subNodeArray->First();
@@ -254,7 +296,54 @@ bool findDriftGap(const char *modulePath, int verbose,
     }
     isMSV = strstr(name,"ReferenceThinGap");
     if (isMSV || strstr(name,"DriftGap")) {
-      found = subNode; break;
+      found = subNode;
+      if (!isMSV) {
+	const TGeoVolume *v = subNode->GetVolume();
+	const TGeoShape *s = v->GetShape();
+	if (!strcmp(s->ClassName(),"TGeoTrd2")) { // Endcap
+	  const TGeoTrd2 *trd2 = dynamic_cast<const TGeoTrd2*>(s);
+	  if (!trd2) {
+	    printf("** findDriftGap: Inconsistency: Volume \"%s\" can't be cast into a \"%s\"\n",
+		   v->GetName(),"TGeoTrd2");
+	  }
+	  totalGap = 2*trd2->GetDY()*10;
+	}
+      }
+    }
+    bool isSensitive = strstr(name,"ThinGap") || strstr(name,"Radiator");
+    if (isSensitive) {
+      // i) Determine whether MSV
+      nMSVs++;
+      // ii) Determine totalGap
+      const TGeoVolume *v = subNode->GetVolume();
+      const TGeoShape *s = v->GetShape();
+      const char *shapes[2] = {"TGeoTubeSeg","TGeoBBox"};
+      for (int is = 0; is<2; is++) {
+	const char *shape = shapes[is]; int error = 0;
+	if (!strcmp(s->ClassName(),shape)) {
+	  if      (is==0) { // CyMBaL
+	    const TGeoTubeSeg *tube = dynamic_cast<const TGeoTubeSeg*>(s);
+	    if (!tube) { error = 1; break; }
+	    double rMin = tube->GetRmin(), rMax = tube->GetRmax();
+	    if (rMin<rMinMin) rMinMin = rMin;
+	    if (rMax>rMaxMax) rMaxMax = rMax;
+	    if      (nMSVs==5) totalGap = (rMaxMax-rMinMin)*10; // in mm
+	    else if (nMSVs>5)  totalGap = -1;
+	  }
+	  else if (is==1) { // Outer
+	    const TGeoBBox *box = dynamic_cast<const TGeoBBox*>(s);
+	    if (!box) { error = 1 ; break; }
+	    gapSum += box->GetDZ();
+	    if      (nMSVs==5) totalGap = gapSum*10*2; // Twice 1/2gap in mm
+	    else if (nMSVs>5)  totalGap = -1;
+	  }
+	}
+	if (error) {
+	  nMSVs = 0; // Reset MSV count
+	  printf("** findDriftGap: Inconsistency: Volume \"%s\" can't be cast into a \"%s\"\n",
+		 v->GetName(),shape);
+	}
+      }
     }
     o = subNodeArray->After(o);
   }
@@ -270,6 +359,10 @@ bool findDriftGap(const char *modulePath, int verbose,
     const double *tr = m->GetTranslation();
     printf("\"%s\": %8.4f,%8.4f,%8.4f cm\n",found->GetName(),tr[0],tr[1],tr[2]);
   }
+  v = gGeoManager->GetCurrentVolume();
+  if (nMSVs==5) // # of subVolumes deemed sensitive =5...
+    // ...in addition to "ReferenceThinGap" found (see above).
+    isMSV = true;
   return true;
 }
 void cellID2LayerModule(int idet, unsigned long cellID,
