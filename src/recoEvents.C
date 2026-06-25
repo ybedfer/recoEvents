@@ -75,7 +75,7 @@ void recoEvents::Loop(int nEvents, int firstEvent)
   Long64_t nentries = nEvents==0 ? fChain->GetEntriesFast() : nEvents;
 
   Long64_t nbytes = 0, nb = 0;
-  for (Long64_t jentry=firstEvent; jentry<nentries;jentry++) {
+  for (Long64_t jentry=firstEvent; jentry<nentries+firstEvent;jentry++) {
     Long64_t ientry = LoadTree(jentry);
     if (ientry < 0) break;
 #ifdef FromChain
@@ -401,7 +401,7 @@ void recoEvents::fillHit(int simOrRec, int idet,
   hs->X->Fill(X,div); hs->Y->Fill(Y,div); hs->R->Fill(R,div);
   hs->Z->Fill(Z,div);
   hs->phi->Fill(phi,div); hs->th->Fill(theta,div);
-  hs->mod->Fill(module,div);
+  hs->mod->Fill(module,idet?div:0);
   double gain = simOrRec ? gains[idet] : 1;
   hs->eDep->Fill(eDep*1e6/gain,div);
   // 2D histos
@@ -680,7 +680,7 @@ void recoEvents::fillRawHit(int idet, int ir)
   if (!parseStrip(idet,1,strip)) return;  
   RawHs &hs = rawHs[strip][idet];
   std::int16_t chN = strip==0 ? cellID>>32&0xffff : cellID>>48&0xffff;
-  hs.chN->Fill(chN,div);
+  hs.chN->Fill(chN,module);
   int section = 0; if (idet==0) section = module/8;
   else             if (idet==1) section = module%2;
   hs.ADC->Fill(raw.charge/gains[idet],section);
@@ -701,11 +701,6 @@ void recoEvents::parseCellID(int idet, unsigned long ID,
   // ***** divISION
   //       iRec = (strip coordinate: 0 = measurement coord, 1 = orthogonal
   if      (idet==0) {            // ***** CyMBaL
-    //      <id>system:8,layer:4,module:12,sensor:30:2,phi:-16,z:-16</id>
-    if (module>15) {
-      // Forward sectors are rotated by phi
-      int sector = module/8, iphi = module%8; module = 8*sector+(4+iphi)%8;
-    }
     div = module;
     strip = ID>>28&0xf;
   }
@@ -715,7 +710,7 @@ void recoEvents::parseCellID(int idet, unsigned long ID,
   }
   else if (idet==2||idet==3) {   // ***** ENDCAPs
     int layer = ID>>8&0x3;
-    div = layer-1;
+    div = layer;
     strip = 0; // Not relevant
   }
   else if (idet==4) {   // Vertex

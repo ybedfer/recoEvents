@@ -177,8 +177,9 @@ public :
    // CyMBal: 4 sections * 8 staves, numbering from 0
    unsigned int MPGDs, Barrels;
    bool isMPGD(int idet), isBarrel(int idet);
-   static constexpr int nModules[N_DETs] =   {32,24,48,48,1920,70};
-   static constexpr int moduleMns[N_DETs] = { 0, 0, 1, 1,  1, 1};
+   static constexpr int nLayers[N_DETs] =   { 1, 1, 2, 2,   3, 2};
+   static constexpr int nModules[N_DETs] =  {32,24,48,48,1920,70};
+   static constexpr int moduleMns[N_DETs] = { 0, 0, 1, 1,   1, 1};
    double volumeThicknesses[N_DETs];   // Overall thickness
    double radiatorThicknesses[N_DETs]; // Thickness of RADIATOR SUBVOLUME
    vector<double> radii[N_DETs];      // in mm
@@ -331,7 +332,7 @@ public :
    virtual void     Init(TTree *tree);
    virtual Bool_t   Notify();
    virtual void     Show(Long64_t entry = -1);
-  
+
    void initGeometry(int idet, bool hasStrips);
    double getCyMBaLRadius(unsigned long cellID);
 
@@ -646,9 +647,9 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     }
     printf("\n");
     // *************** INSTANTIATE HISTOS
-    // ***** SET HISTO RANGES 
-    double dX, dY, dR, ZMn, ZMx, RMn, RMx;
-    int nMods = nModules[idet], modMn = moduleMns[idet], nDivs, nLayers;
+    // ***** SET HISTO RANGES
+    double dX, dY, dR, ZMn, ZMx, RMn, RMx, dphir;
+    int nMods = nModules[idet], modMn = moduleMns[idet], nDivs, nSubsets;
     double UMn, UMx; // Outer specific: U binning
     double dRr = 0; // Endcap specific: R binning
     if      (idet==0) {             // ********** CyMBaL
@@ -656,8 +657,9 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       double RAve = (radii[0][0]+radii[0][1])/2, deltaR = 25;
       RMn = RAve-deltaR; RMx = RAve+deltaR;
       ZMn = ZAbscissae[0][0]; ZMx = ZAbscissae[0][1];
+      dphir = hWidths[0][1]; // Retain largest 1/2width (keeping in mind it's in rad.)
       nDivs = nMods;
-      nLayers = 1;
+      nSubsets = 1;
     }
     else if (idet==1) {             // ********** µRWELL
       dX=dY = 800;
@@ -669,7 +671,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       double dRangeUr = (modHL+modHW)*sqrt(2)/2;
       double deltaUr = dRangeUr/224; UMx = dRangeUr+16*deltaUr; UMn = -UMx;
       nDivs = 2;
-      nLayers = nDivs;
+      nSubsets = 2;
     }
     else if (idet==2 || idet==3) {  // ********** Endcaps
       RMn = radii[idet][0]; RMx = radii[idet][1];
@@ -678,8 +680,8 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       double deltaZ = fabs(ZAbscissae[idet][1]-ZAbscissae[idet][0])/2;
       deltaZ *= 1.2;
       ZMn = ZAve-deltaZ; ZMx = ZAve+deltaZ;
-      nDivs = 2;
-      nLayers = 2;
+      nDivs =    nLayers[idet];
+      nSubsets = nLayers[idet];
     }
     else if (idet==4 || idet==5) {  // ********** VERTEX, Si
       double RAve = (radii[idet][0]+radii[idet][1])/2;
@@ -687,13 +689,15 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       RMn = RAve-deltaR; RMx = RAve+deltaR;      
       dX=dY = RMx*1.1;
       ZMn = ZAbscissae[idet][0]; ZMx = ZAbscissae[idet][1];
-      if (idet==4) nDivs = 3; // 3 layers
-      else         nDivs = 2;
-      nLayers = nDivs;
+      nDivs = nLayers[idet];
+      nSubsets = nDivs;
     }
     // Z|R: 224 for core part + 2*16 bins on the edge to get possible stray hits
     if (isBarrel(idet)) {
       double deltaZ = 16*(ZMx-ZMn)/224; ZMn -= deltaZ; ZMx += deltaZ;
+      if (idet==0) { // CyMBaL: local phi
+	double deltaphi = 16*2*dphir/224; dphir += deltaphi;
+      }
     }
     else {
       double deltaR = 16*(RMx-RMn)/224; RMn -= deltaR; RMx += deltaR;
@@ -726,6 +730,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       snprintf(hN,lN,"%s%s",tag,"Rr");
       snprintf(hT,lT,"%s;#font[32]{%c}r  #font[22]{(mm)}   ",dN,'R');
       hs.Rr =  new TH2D(hN,hT,1024,RMn, RMx,nDivs,divMn,divMx);
+      hs.Ur=hs.Vr = 0;
     }
     else if (idet==1) { // If Outer
       snprintf(hN,lN,"%s%s",tag,"Rr");
@@ -740,25 +745,30 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       hs.Vr =  new TH2D(hN,hT,1024,UMn,UMx,nDivs,divMn,divMx);
     }
     else if (idet==2 || idet==3) {
-      snprintf(hN,lN,"%s%s",tag,"Rr");
-      snprintf(hT,lT,"%s;#font[32]{%c}r  #font[22]{(mm)}   ",dN,'R');
-      hs.Rr =  new TH2D(hN,hT,1024,RMn,RMx,nDivs,divMn,divMx);
+      hs.Rr=hs.Ur=hs.Vr = 0;
+    }
+    else {
+      hs.Rr=hs.Ur=hs.Vr = 0;
     }
     snprintf(hN,lN,"%s%s",tag,"Z");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'Z');
     hs.Z =   new TH2D(hN,hT,256,ZMn, ZMx,nDivs,divMn,divMx);
     snprintf(hN,lN,"%s%s",tag,"phi");
     snprintf(hT,lT,"%s;#scale[1.2]{#varphi}  #font[22]{(rad)}   ",dN);
-    hs.phi = new TH2D(hN,hT,512,-pi,  pi,nDivs,divMn,divMx); 
-    snprintf(hN,lN,"%s%s",tag,"phir");
-    snprintf(hT,lT,"%s;#scale[1.2]{#varphi}r  #font[22]{(rad)}   ",dN);
-    hs.phir = new TH2D(hN,hT,512,-pi, pi,nDivs,divMn,divMx); 
+    hs.phi = new TH2D(hN,hT,512,-pi,  pi,nDivs,divMn,divMx);
+    if (idet==0) { // CyMBaL specific (because only detector where phi is a local coord.)
+      snprintf(hN,lN,"%s%s",tag,"phir");
+      snprintf(hT,lT,"%s;#scale[1.2]{#varphi}r  #font[22]{(rad)}   ",dN);
+      hs.phir = new TH2D(hN,hT,512,-dphir,dphir,nDivs,divMn,divMx);
+    }
+    else hs.phir = 0;
     snprintf(hN,lN,"%s%s",tag,"th");
     snprintf(hT,lT,"%s;#theta  #font[22]{(rad)}   ",dN);
     hs.th =  new TH2D(hN,hT,256,  0,  pi,nDivs,divMn,divMx);
     snprintf(hN,lN,"%s%s",tag,"mod");
     snprintf(hT,lT,"%s;module#",dN);
-    hs.mod = new TH2D(hN,hT,nMods,modMn-.5,modMn+nMods-.5,nLayers,divMn,divMx);
+    hs.mod = new TH2D(hN,hT,nMods,modMn-.5,modMn+nMods-.5,
+		      nSubsets,-.5,nSubsets-.5);
     // ***** eDep
     // Log binning; set a bin edge at threshold
     double eDBins[N_eDBINS+1]; getEDBinning(eDThresholds[idet],eDBins);
@@ -770,16 +780,20 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 		   hs.Rr,        // CyMBaL/Outer specific
 		   hs.Ur,hs.Vr,  // Outer specific
 		   hs.eDep};
-    unsigned int flags[] =
-      /* */       {0x3f,0x3f,0x3f,0x3f,  0x3f, 0x3f,  0x3f,
+    unsigned int flags[] = // 0x1: standard axes, 0x2: 2 digits max. in Y 
+      /* */       { 0x3, 0x3, 0x3, 0x3,   0x3,  0x3,   0x1,
 		    0x3,
-		    0x2, 0x2,
-		    0x3f};
+		    0x3, 0x3,
+		    0x3};
     int nh2s = sizeof(h2s)/sizeof(TH2D*);
     for (int ih = 0; ih<nh2s; ih++) {
-      if (!(0x1<<idet&flags[ih])) continue;
+      if (!h2s[ih]) continue;
+      if (!(0x1&flags[ih])) continue;
       setAxes(h2s[ih]->GetXaxis(),505,0);
-      setAxes(h2s[ih]->GetYaxis(),505,2);
+      if (0x2&flags[ih])
+	setAxes(h2s[ih]->GetYaxis(),505,2);
+      else
+	setAxes(h2s[ih]->GetYaxis(),505,3);
     }
     // ***** 2D HISTOS: X vs. Y, R vs. Z, theta vs. phi
     string sT;
@@ -876,6 +890,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	snprintf(hN,lN,"%c%s",'d',"Rr"); // Rr = Reduced R
 	snprintf(hT,lT,"%s;d#font[32]{%c}r  #font[22]{(#mum)}   ",dN,'R');
 	rs.R =   new TH1D(hN,hT,256,-dr,dr);
+	rs.Ur=rs.Vr = 0;
       }
       else if (idet==1) { // If Outer
 	snprintf(hN,lN,"%c%s",'d',"Rr"); // Rr = Reduced R
@@ -893,6 +908,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	snprintf(hN,lN,"%c%s",'d',"R");
 	snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'R');
 	rs.R =   new TH1D(hN,hT,256,-dr,dr);
+	rs.Ur=rs.Vr = 0;
       }
       snprintf(hN,lN,"%c%s",'d',"Z");
       snprintf(hT,lT,"%s;d#font[32]{%c}  #font[22]{(#mum)}   ",dN,'Z');
@@ -905,15 +921,18 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	snprintf(hT,lT,"%s;Rd#scale[1.2]{#varphi}r  #font[22]{(#mum)}   ",dN);
 	rs.Rphir = new TH1D(hN,hT,512,-dx,dx); 
       }
+      else
+	rs.Rphir = 0;
       TH1D *r1s[] =          {rs.X,rs.Y,rs.Z,rs.phi,rs.R,
 			      rs.Rphir,      // CyMBaL specific
 			      rs.Ur,rs.Vr};  // Outer specific
-      unsigned int flags[] = {0x3f,0x3f,0x3f,  0x3f,0x3f,
+      unsigned int flags[] = { 0x1, 0x1, 0x1,   0x1, 0x1,
 			       0x1,
-			       0x2,  0x2};
+			       0x1,  0x1};
       int nr1s = sizeof(r1s)/sizeof(TH1D*);
       for (int ih = 0; ih<nr1s; ih++) {
-	if (!(0x1<<idet&flags[ih])) continue;
+	if (!r1s[ih]) continue;
+	if (!(0x1&flags[ih])) continue;
 	setAxes(r1s[ih]->GetXaxis(),515,3); setAxes(r1s[ih]->GetYaxis(),505,3);
       }
       /*
@@ -1192,8 +1211,10 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
 	    snprintf(tag,3,"_%d",module); string hS = h2->GetName(); hS += tag;
 	    TH1D *hsum = h2->ProjectionX(hS.c_str(),module+1,module+1);
 	    hsum->SetLineColor(cols[module%2]);
-	    for (int sector = 1; sector<4; sector++) {
-	      int modvle = 8*sector+module;
+	    // Symmetrized module index
+	    for (int section = 1; section<4; section++) {
+	      int modvle; if (section<2) modvle = 8*section+module;
+	      else                       modvle = 8*section+(module+4)%8;
 	      TH1D *helem = h2->ProjectionX("temp",modvle+1,modvle+1);
 	      hsum->Add(helem);
 	    }
