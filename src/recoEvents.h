@@ -341,6 +341,7 @@ public :
    virtual Bool_t   Notify();
    virtual void     Show(Long64_t entry = -1);
 
+   Geometry *geo;
    void initGeometry(int idet, bool hasStrips);
    bool parseGeometry();
    double getCyMBaLRadius(unsigned long cellID);
@@ -393,7 +394,7 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
   try {
     printf(" * recoEvents::Init: Instantiating Geometry.\n");
     const char geoFN[] = "recoEvents.geometry.root";
-    new Geometry(geoFN);
+    geo = new Geometry(geoFN);
   } catch (const std::runtime_error& error) {
     cerr << error.what() << endl;
     return;
@@ -1662,7 +1663,7 @@ ana->requirePDG = 13; ana->requireQuality = 2;
 ana->requireOffBorder = -1;
 ana->verbose = 0x3000;
 ana->Loop();
-ana->DrawphithZR(0,0x3f,0x1d,1);
+ana->DrawphithZR(0,0x1,0x1d,1);
 ana->DrawResiduals(1,0x1,0x6,cCyMBaLRes,1,2);
 ana->DrawResiduals(2,0x1,0x6,cCyMBaLRes,3,2);
 // ***** PDG

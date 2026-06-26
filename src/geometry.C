@@ -143,12 +143,6 @@ void recoEvents::initGeometry(int idet, bool hasStrips)
 }
 bool recoEvents::parseGeometry()
 {
-  Geometry *geo = Geometry::Ptr();
-  if (!geo) {
-    printf("** parseGeometry: No access to geometry\n");
-    return false;
-  }
-
   const char *shapes[Geometry::N_MPGDs] = {"TGeoTubeSeg","TGeoBBox","TGeoTrd2","TGeoTrd2"};
 
   // LOOP ON MPGDs

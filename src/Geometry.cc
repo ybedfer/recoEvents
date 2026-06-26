@@ -26,8 +26,6 @@ Geometry::Geometry(const char *geoFN, int verbose)
   
   // Init
   MPGD2DStrips = 0;
-  if(address == 0) //!< Protection against multiple instances
-    address = this;
   verboseLevel = verbose;
 
   int error = 0;
@@ -61,7 +59,6 @@ Geometry::Geometry(const char *geoFN, int verbose)
     }
   }
   else {
-    address = 0;
     throw std::runtime_error("Failing to init Geometry. => No World<->Local available.");
   }
 };

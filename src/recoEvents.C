@@ -32,11 +32,6 @@ void recoEvents::Loop(int nEvents, int firstEvent)
     printf("** Loop: Invalid instance of recoEvents. => Exit...\n");
     return;
   }
-  Geometry *geo = Geometry::Ptr();
-  if (!geo) {
-    printf("** Loop: Geometry not available. => Exit...\n");
-    return;
-  }
 
   //   In a ROOT session, you can do:
   //      root> .L recoEvents.so
@@ -877,7 +872,7 @@ bool recoEvents::extrapolate(int idet, int ih, int jh)
     // turns out to fail in case SimHit quality >0 and PDG requirement (assumed
     // to be =13, i.e. muon) is fulfilled.
     unsigned status = getSimHitStatus(idet,ih);
-    doPrint = status==0x3;
+    doPrint = requireQuality && status==0x3;
   }
   if (doPrint) {
     printf("#%5d,%d %d,%d dext %f/%f\n",evtNum,idet,ih,jh,dext,dMx);
@@ -2055,11 +2050,6 @@ double recoEvents::getCyMBaLRadius(unsigned long cellID)
 bool recoEvents::wTol(int idet, unsigned long cellID, double X, double Y, double Z,
 		      double &Xr, double &Yr, double &Zr, int debug)
 {
-  Geometry *geo = Geometry::Ptr();
-  if (!geo) {
-    printf("** g2l: No access to geometry\n");
-    return false;
-  }
   double gpos[3], lpos[3]; gpos[0] = X; gpos[1] = Y; gpos[2] = Z;
   //printf("%d %.4f,%.4f,%.4f\n",debug,gpos[0],gpos[1],gpos[2]);
   if (!geo->WorldToLocal(idet,cellID,gpos,lpos)) {
@@ -2073,11 +2063,6 @@ bool recoEvents::wTol(int idet, unsigned long cellID,
 		      double X,   double Y,   double Z,   double Px, double Py, double Pz,
 		      double &Xr, double &Yr, double &Zr, double *lmom, int debug)
 {
-  Geometry *geo = Geometry::Ptr();
-  if (!geo) {
-    printf("** g2l: No access to geometry\n");
-    return false;
-  }
   double gpos[3], lpos[3]; gpos[0] = X;  gpos[1] = Y;  gpos[2] = Z;
   double gmom[3];          gmom[0] = Px; gmom[1] = Py; gmom[2] = Pz;
   if (!geo->WorldToLocal(idet,cellID,gpos,gmom,lpos,lmom)) {
@@ -2090,11 +2075,6 @@ bool recoEvents::wTol(int idet, unsigned long cellID,
 bool recoEvents::lTow(int idet, unsigned long cellID,
 		      double *lpos, double *gpos)
 {
-  Geometry *geo = Geometry::Ptr();
-  if (!geo) {
-    printf("** g2l: No access to geometry\n");
-    return false;
-  }
   if (!geo->LocalToWorld(idet,cellID,lpos,gpos))
     return false;
   return true;

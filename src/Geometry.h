@@ -25,18 +25,6 @@ public:
   bool LocalToWorld(int idet, unsigned long cellID,
 		    double *lpos,  // In mm
 		    double *gpos); // In mm
-  // ***** SINGLETON CLASS
-  static inline Geometry* address;
-  static Geometry* Ptr()
-  {
-    if (address) {
-      return(address);
-    }
-    else {
-      printf("** Geometry::Ptr(): Inconsistency: The object of Geometry class is not yet created or already destructed\n");
-      return 0;
-    }
-  };
   static constexpr int N_MPGDs = 4;
   unsigned int MPGD2DStrips;
   std::vector<std::vector<const TGeoVolume*>> geoDetVols[4];
