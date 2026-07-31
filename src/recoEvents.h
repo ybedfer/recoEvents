@@ -7,7 +7,7 @@
 /*
 // ********** USAGE
 // ***** INPUT = TChain
-const char tag[7] = "struv", nEvtsTag[3] = "20"; 
+const char tag[7] = "struv", nEvtsTag[3] = "20";
 TChain *events = new TChain("events"); char fName[] = "podio.sensor.1234.20,root"; size_t lN = strlen(fName)+1; int seeds[] = {1234,4567,8910,1112}; int nSeeds = sizeof(seeds)/sizeof(int);
 for (int i = 0; i<nSeeds; i++) { snprintf(fName,lN,"podio.%s.%s.%4d.root",tag,nEvtsTag,seeds[i]); events->Add(fName); }
 // ***** INPUT = TTree
@@ -137,11 +137,13 @@ public :
    // "nObjCreated": counting # of objects in a STATIC MEMBER. "iObjCreated"
    // is specific to an instance and used to give distinct names to its TCanvas'
    // or TDirectory's.
-   static unsigned int nObjCreated; unsigned int iObjCreated;
+   static int nObjCreated; int iObjCreated;
    unsigned int processedDetectors;
    unsigned int stripMode;  // Pattern of detectors w/ strip readout
    bool reconstruction;
    bool requireTraversing; // Conditions coalescing
+   bool isCyMBaL_8S; // Older version of CyMBaL w/ 8 sectors
+  //#define USE_OLDER_Si
    int getDetHit(int idet, int ih, double &X, double &Y, double &Z,
 		 unsigned int &module, unsigned int &div);
    // ***** COALESCED HIT and X-REFERENCES
@@ -151,7 +153,7 @@ public :
    map<int,vector<int>,less<int>> Rec2coas, raw2coas;
    // ***** EVENT CONTROL, DEBUGGING
    int evtNum; // Current event# (used to document error messages).
-  // (Layer,Module)
+   // (Layer,Module)
    LayerModules prvLayerModule;
    LayerModules allLayerModules; // Pattern of all (layer,module)'s where hit
    // (Layer,module)'s where only LONE PRIMARIES, i.e. primary hits w/o secondary offsprings
@@ -175,30 +177,25 @@ public :
    void SetNSensitiveSurfaces(int nSurfaces);
    // GEOMETRY/CONFIGURATION
    // CyMBal: 4 sections * 8 staves, numbering from 0
+   Geometry *geo;
    unsigned int MPGDs, Barrels;
    bool isMPGD(int idet), isBarrel(int idet);
-   static constexpr int nLayers[N_DETs] =   { 1, 1, 2, 2,   3, 2};
-   static constexpr int nModules[N_DETs] =  {32,24,48,48,1920,70};
+   int nLayers[N_DETs];
+   int nModules[N_DETs];
    static constexpr int moduleMns[N_DETs] = { 0, 0, 1, 1,   1, 1};
    double volumeThicknesses[N_DETs];   // Overall thickness
    double radiatorThicknesses[N_DETs]; // Thickness of RADIATOR SUBVOLUME
    vector<double> radii[N_DETs];      // in mm
-   vector<double> ZAbscissae[N_DETs]; // in mm
+   double ZAbscissae[N_DETs][2];
    int nSections[N_DETs];
    map<int,int> module2StaveTypes[N_DETs];
    int getStaveType(int idet, unsigned long cellID);
-   int GetStaveType(int idet, unsigned long cellID);
    vector<double> hWidths[N_DETs];    // HalfWidths
    double ZHLengths[N_DETs];          // HalfLengths
    vector<double> pitches[N_DETs];    // pitch in mm
-   double gains[N_DETs], eDThresholds[N_DETs], resolutions[N_DETs];
+   double gains[N_DETs], eDThresholds[N_DETs];
+   vector<double> resolutions[N_DETs];
    vector<int> nChannels[N_DETs];
-    // Temporary placeholders
-   double ZExtrema[N_DETs][2];
-   vector<double> Radii[N_DETs];
-   vector<double> HWidths[N_DETs];
-   double zHLengths[N_DETs];
-   int NLayers[N_DETs], NModules[N_DETs];
 
    // ***** SELECTION
    TTreeFormula *select; // Provides for specifying a rejection cut.
@@ -239,7 +236,7 @@ public :
    void fillRawHit(int idet, int ir);
    void fillHit(int iSimRec, int idet,
 		double X, double Y, double Z, double E, unsigned long cellID);
-   bool fillResids(int idet, int ih, int ir);
+   unsigned int fillResids(int idet, int ih, int ir);
    double getResCut(int idet, unsigned long cellID, int strip, bool onBorder);
    void parseCellID(int idet, unsigned long ID,
 		    unsigned int &module, unsigned int &div, unsigned int &strip);
@@ -341,9 +338,8 @@ public :
    virtual Bool_t   Notify();
    virtual void     Show(Long64_t entry = -1);
 
-   Geometry *geo;
-   void initGeometry(int idet, bool hasStrips);
    bool parseGeometry();
+   bool extraGeometry(int idet, bool hasStrips);
    double getCyMBaLRadius(unsigned long cellID);
 
    // ***** Data members not to be modified from command line:
@@ -385,12 +381,7 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
   }
   Barrels = 0x33; // CyMBaL, Outer and Vertex and Si
   nSensitiveSurfaces = 5; // Default = 5. Can be changed via "SetNSensitiveSurfaces"
-  for (int idet = 0; idet<N_DETs; idet++) {
-    if (!(0x1<<idet&processedDetectors)) continue;
-    initGeometry(idet,hasStrips&0x1<<idet);
-  }
-  
-  //Geometry
+  // Retrieve Geometry of MPGDs from TGeometry file
   try {
     printf(" * recoEvents::Init: Instantiating Geometry.\n");
     const char geoFN[] = "recoEvents.geometry.root";
@@ -400,6 +391,13 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
     return;
   }
   parseGeometry();
+  // => Derive CyMBaL's version: 8 or 12 sectors
+  isCyMBaL_8S = nModules[0]==8;
+  // Extra geometry parameters (including non-MPGD's) from built-in's
+  for (int idet = 0; idet<N_DETs; idet++) {
+    if (!(0x1<<idet&processedDetectors)) continue;
+    if (!extraGeometry(idet,hasStrips)) return;
+  }
 
   // ***** OBJECT ID
   iObjCreated = nObjCreated++;
@@ -661,11 +659,15 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     // ***** SET HISTO RANGES
     double dX, dY, dR, ZMn, ZMx, RMn, RMx, dphir;
     int nMods = nModules[idet], modMn = moduleMns[idet], nDivs, nSubsets;
+    // Average R
+    double RAve = 0; for (int ir = 0; ir<(int)radii[idet].size(); ir++)
+		       RAve += radii[idet][ir];
+    RAve /= radii[idet].size();
     double UMn, UMx; // Outer specific: U binning
     double dRr = 0; // Endcap specific: R binning
     if      (idet==0) {             // ********** CyMBaL
       dX=dY = 600;
-      double RAve = (radii[0][0]+radii[0][1])/2, deltaR = 25;
+      double deltaR = 25;
       RMn = RAve-deltaR; RMx = RAve+deltaR;
       ZMn = ZAbscissae[0][0]; ZMx = ZAbscissae[0][1];
       dphir = hWidths[0][1]; // Retain largest 1/2width (keeping in mind it's in rad.)
@@ -674,7 +676,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     }
     else if (idet==1) {             // ********** µRWELL
       dX=dY = 800;
-      double RAve = radii[1][0], deltaR = 20;
+      double deltaR = 20;
       RMn = RAve-deltaR; RMx = RAve+deltaR;
       ZMn = ZAbscissae[1][0]; ZMx = ZAbscissae[1][1];
       double modHL = 2*ZHLengths[1], modHW = 2*hWidths[1][0];
@@ -685,18 +687,21 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       nSubsets = 2;
     }
     else if (idet==2 || idet==3) {  // ********** Endcaps
-      RMn = radii[idet][0]; RMx = radii[idet][1];
+      // Radius: there are only two radii, but size of "radii" vector may be >2.
+      int ir; for (ir = 0, RMn=RMx = 0; ir<(int)radii[idet].size(); ir++) {
+	if (!RMn || radii[idet][ir]<RMn) RMn = radii[idet][ir];
+	if (!RMx || radii[idet][ir]>RMx) RMx = radii[idet][ir];
+      }
       dX=dY = RMx*1.1;
       double ZAve = (ZAbscissae[idet][0]+ZAbscissae[idet][1])/2;
       double deltaZ = fabs(ZAbscissae[idet][1]-ZAbscissae[idet][0])/2;
-      deltaZ *= 1.2;
+      deltaZ *= 1.25;
       ZMn = ZAve-deltaZ; ZMx = ZAve+deltaZ;
       nDivs =    nLayers[idet];
       nSubsets = nLayers[idet];
     }
     else if (idet==4 || idet==5) {  // ********** VERTEX, Si
-      double RAve = (radii[idet][0]+radii[idet][1])/2;
-      double deltaR = (radii[idet][1]-radii[idet][0])/2; deltaR *= 1.1;
+      double deltaR = (radii[idet][1]-radii[idet][0])/2; deltaR *= 1.25;
       RMn = RAve-deltaR; RMx = RAve+deltaR;      
       dX=dY = RMx*1.1;
       ZMn = ZAbscissae[idet][0]; ZMx = ZAbscissae[idet][1];
@@ -845,10 +850,14 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       double dx, dy, dz, dr, du, dv; // in µm
       double dphi = 1.2; // in mrad
       if (idet==0 || idet==1) {
-	dx = 608;
+	if (idet==0)
+	  dx = isCyMBaL_8S ? 608 : 1024; // 150 and 250 um in resolution, resp.
+	else
+	  dx = 608;
 	double thickness = volumeThicknesses[idet], deltaR = thickness/192;
 	dr = thickness/2+32*deltaR; dr *= 1000;
-	dz = dx; du = dx; dv = dx;
+	dz = 608;
+	du = dx; dv = dx;
 	if (0x1<<idet&stripMode) { // ***** STRIPS: UPDATE RANGES DEPENDING ON iStrip
 	  if (idet==0) { // CyMBaL
 	    // 256-32-32 bins for the core part, 2x32 bins outside 
@@ -856,7 +865,8 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	    // For phi, X, etc... no way to have limit at bin edge, since we have
 	    // 2 distinct sensitive surface radii.
 	    double dphi_Z = 2*pi/8/2; dphi_Z *= 1.20;
-	    double RsurfMx = radii[0][1], dx_Z = dphi_Z*RsurfMx;
+	    double RsurfMx = isCyMBaL_8S ? radii[0][1] : radii[0][0];
+	    double dx_Z = dphi_Z*RsurfMx;
 	    dz_phi *= 1000; dx_Z *= 1000; dphi_Z *= 1000; // mm -> µm, rad -> mrad
 	    if (iStrip==1) dz = dz_phi;
 	    else { dphi = dphi_Z; dx = dx_Z; }
@@ -1143,6 +1153,11 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
 			     unsigned int histoPattern, bool decompose,
 			     TCanvas *cPrv, int ipad, int col) // Superimpose on pre-existing TCanvas cPrv
 {
+  // ***** IS recovents INSTANCE VALID?
+  if (iObjCreated<0) {
+    printf("** DrawphithZR: Instanstiation of this \"recoEvents\" instance not complete.\n  => Giving up!\n");
+    return;
+  }
   // ***** PARSE <iSimRec> ARG.
   if (iSimRec<0 || 2<iSimRec) {
     printf("** DrawphithZR: Invalid <iSimRec> arg.(=%d): neither 0(=sim) nor 1(=rec) nor 2(=2nd coord of STRIP)\n",iSimRec); return;
@@ -1193,6 +1208,7 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
       cEvents->cd(pad++);
       TH2D *h2 = h2s[ih];
       TH1D *hproj = h2->ProjectionX(); hproj->Draw();
+      hproj->SetLineColor(1); // Total histo in black
       if      ((flags[ih]&0x4) &&  isBarrel(idet)) {
 	hproj->SetMinimum(.5); gPad->SetLogy();
       }
@@ -1215,17 +1231,22 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
       int optStat = (flags[ih]&0x1) ? 1110 : 10;
       SetPaveText(hproj,0,optStat);
       if (decompose) {
-	char tag[] = "_3";
+	char tag[] = "_11"; size_t lt = strlen(tag)+1;
 	if      (idet==0 && (ih==0 || ih==3)) { // CyMBaL phi, R
 	  int cols[2] = {bleu,rouge};
-	  for (int module = 0; module<8; module++) {
-	    snprintf(tag,3,"_%d",module); string hS = h2->GetName(); hS += tag;
+	  int nModsPerSection = nModules[0]/4;
+	  for (int module = 0; module<nModsPerSection; module++) {
+	    snprintf(tag,lt,"_%d",module); string hS = h2->GetName(); hS += tag;
 	    TH1D *hsum = h2->ProjectionX(hS.c_str(),module+1,module+1);
 	    hsum->SetLineColor(cols[module%2]);
 	    // Symmetrized module index
 	    for (int section = 1; section<4; section++) {
-	      int modvle; if (section<2) modvle = 8*section+module;
-	      else                       modvle = 8*section+(module+4)%8;
+	      int modvle; if (isCyMBaL_8S) {
+		if (section<2) modvle = 8*section+module;
+		else           modvle = 8*section+(module+4)%8;
+	      }
+	      else
+		modvle = 12*section+module;
 	      TH1D *helem = h2->ProjectionX("temp",modvle+1,modvle+1);
 	      hsum->Add(helem);
 	    }
@@ -1234,12 +1255,13 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
 	  }
 	}
 	else if (idet==0) {                     // CyMBaL theta,Z
+	  int nModsPerSection = nModules[0]/4;
 	  int cols[4] = {violet,vert,orange,marron};
-	  for (int module = 0; module<32; module += 8) {
+	  for (int module = 0; module<nModules[0]; module += nModsPerSection) {
 	    snprintf(tag,3,"_%d",module/8); string hS = h2->GetName(); hS += tag;
-	    TH1D *h1 = h2->ProjectionX(hS.c_str(),module+1,module+8);
+	    TH1D *h1 = h2->ProjectionX(hS.c_str(),module+1,module+nModsPerSection);
 	    h1->Draw("same");
-	    h1->SetLineColor(cols[module/8]);
+	    h1->SetLineColor(cols[module/nModsPerSection]);
 	  }
 	}
 	else {          // µRWELL, Vertex, Si
@@ -1262,13 +1284,18 @@ void recoEvents::DrawphithZR(int iSimRec, // 0: sim, 1: rec, 2: rec 2nd coord of
 }
 void recoEvents::DrawModules(int iSimRec, unsigned int detectorPattern, bool decompose)
 {
+  // ***** IS recovents INSTANCE VALID?
+  if (iObjCreated<0) {
+    printf("** DrawModules: Instanstiation of this \"recoEvents\" instance not complete.\n  => Giving up!\n");
+    return;
+  }
   // ********** DRAW module# FOR EACH DETECTOR IN detectorPattern
   // ***** PARSE ARG.S
   if (iSimRec<0 || 2<iSimRec) {
     printf("** DrawModules: Invalid <iSimRec> arg.(=%d): neither 0(=sim) nor 1(=rec) nor 2(=2nd coord of STRIP)\n",iSimRec); return;
   }
   if (!reconstruction && iSimRec) {
-    printf("** DrawphithZR: Invalid <iSimRec> arg.(=%d): recoEvents is simulationOnly\n",iSimRec); return;
+    printf("** DrawModules: Invalid <iSimRec> arg.(=%d): recoEvents is simulationOnly\n",iSimRec); return;
   }
   unsigned int pat = processedDetectors&detectorPattern;
   if (!pat) {
@@ -1323,6 +1350,11 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
 			       unsigned int histoPattern,
 			       TCanvas *cPrv, int ipad, int col) // Superimpose on pre-existing TCanvas cPrv
 {
+  // ***** IS recovents INSTANCE VALID?
+  if (iObjCreated<0) {
+    printf("** DrawResiduals: Instanstiation of this \"recoEvents\" instance not complete.\n  => Giving up!\n");
+    return;
+  }
   // ********** DRAW (subset of) RESIDUALS FOR EACH DETECTOR IN detectorPattern
   // ***** PARSE ARG.S
   if (iRec<1 || 2<iRec) {
@@ -1416,20 +1448,6 @@ void recoEvents::DrawResiduals(int iRec, // 1: rec, 2: 2nd coord of STRIPS phi/Z
 }
 int recoEvents::getStaveType(int idet, unsigned long cellID)
 {
-  if (idet==0) {
-    int module = (idet==2 || idet==3) ? cellID>>10&0x3f : cellID>>12&0xfff;
-    int section = module/8;
-    if (section<0 || 3<section) {
-      printf("** getStaveType: %d,0x%lx -> section %d\n",idet,cellID,section);
-      return -1;
-    }
-    return (section==1 || section==2) ? 0 : 1;
-  }
-  else
-    return 0;
-}
-int recoEvents::GetStaveType(int idet, unsigned long cellID)
-{
   int module = (idet==2 || idet==3) ? cellID>>10&0x3f : cellID>>12&0xfff;
   map<int,int> &module2StaveType = module2StaveTypes[idet];
   map<int,int>::const_iterator im = module2StaveType.find(module);
@@ -1497,10 +1515,13 @@ LayerModules::LayerModules(int idet, unsigned long cellID) {
     index = cellID>>8&0xf; num = cellID>>12&0xfff; num /= 32;
   }
   else if (idet==5) { // Si: 2 systemIDs: 0x3b and 0x3c; sublayer = module parity
-    /* */                      num = cellID>>12&0xfff;
+#ifdef USE_OLDER_Si
     index = (1-(cellID%2))*2 + num%2; num /= 2;
+#else
+    index = (cellID-1)%2;  num = cellID>>19&0x3f;
+#endif
   }
-  if (index>3 || num>63) {
+  if (index>3 || num>80) {
     printf("** LayerModules: Invalid args: idet,cellID = %d,0x%08lx,0x%08lx => index,num = %d,%d\n",
 	   idet,cellID&0xffffffff,cellID>>32,index,num);
   }

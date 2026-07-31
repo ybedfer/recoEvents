@@ -7,7 +7,7 @@
 #include <stdio.h>
 
 // Globals
-unsigned int recoEvents::nObjCreated = 0;
+int recoEvents::nObjCreated = 0;
 
 // Interfaces
 unsigned int cExtension(double const* lpos, double const* lmom, // Input subHit
@@ -161,6 +161,14 @@ void recoEvents::Loop(int nEvents, int firstEvent)
       // ********** ASSOCIATION: BUILD Rec/raw -> coa MAP
       if (!setXReferences(idet)) continue;
 
+      //#define DEBUG_CyMBaL
+#ifdef DEBUG_CyMBaL
+      // Which (event,module)'s have different numbers of phi and Z hits?
+      // (Turns out that they are from the edge, where CyMBaL has DeadZone.) 
+      typedef struct{ unsigned long modID; int nphisPerMod, nZsPerMod; }
+	RecData;
+      vector<RecData> recData;
+#endif
       for (int iR = 0; iR<(int)recs[idet]->size(); iR++) {
 	// ********** LOOP ON Rec HITS
 	debugRec(idet,iR);
@@ -184,7 +192,26 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	      // ***** SELECTIONS
 	      if (!(getStatusWord(cIndex)&0x2)) continue;
 	      // ***** FILL RESIDUAL
-	      if (fillResids(idet,cIndex,iR)) selecRec = 1;
+	      unsigned int sRec = fillResids(idet,cIndex,iR);
+	      selecRec |= sRec;
+#ifdef DEBUG_CyMBaL
+	      if (idet==0 && sRec) { 
+		const edm4eic::TrackerHitData &rec = recs[idet]->at(iR);
+		unsigned long recModID = rec.cellID&0x0fffffff;
+		RecData *curRD;
+		int iRD; for (iRD = 0, curRD = 0; iRD<(int)recData.size();
+			      iRD++) {
+		  RecData &rd = recData[iRD];
+		  if (rd.modID==recModID) { curRD = &rd; break; }
+		}
+		if (!curRD) {
+		  RecData rd; rd.modID = recModID; rd.nphisPerMod=rd.nZsPerMod = 0;
+		  recData.push_back(rd); curRD = &recData.back();
+		}
+		if      (sRec==0x1) curRD->nphisPerMod++;
+		else if (sRec==0x2) curRD->nZsPerMod++;
+	      }
+#endif
 	    }
 	  }
 	  if (selecRec) {  // ***** FILL rec HISTOS
@@ -193,6 +220,14 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	  }
 	}
       }
+#ifdef DEBUG_CyMBaL
+      for (int iRD = 0; iRD<(int)recData.size(); iRD++) {
+	RecData &rd = recData[iRD];
+	if (rd.nphisPerMod!=rd.nZsPerMod)
+	  printf("++++ %5d, %d/%d,0x%08lx: #nphis = %d, nZs = %d\n",
+		 evtNum,iRD,(int)recData.size(),rd.modID,rd.nphisPerMod,rd.nZsPerMod);
+      }
+#endif
 
       if (!(0x1<<idet&stripMode)) // So far only strip detectors
 	continue;
@@ -436,7 +471,7 @@ void recoEvents::fillHit(int simOrRec, int idet,
     hs->xyr->Fill(Yl,Xl);
   }
 }
-bool recoEvents::fillResids(int idet, int ih, int ir)
+unsigned int recoEvents::fillResids(int idet, int ih, int ir)
 {
   // Returns false if inconsistency.
   const SimTrackerHitData &hit = coalescedHs[ih];
@@ -454,12 +489,12 @@ bool recoEvents::fillResids(int idet, int ih, int ir)
   double dphi = 1000*(phir-phis);
   unsigned int module, div, strip; parseCellID(idet,cellID,module,div,strip);
   // ***** STRIP: Convert stripID -> strip. Is it valid? 
-  if (!parseStrip(idet,1,strip)) return false;
+  if (!parseStrip(idet,1,strip)) return 0;
   double Rr = sqrt(Xr*Xr+Yr*Yr), Rs =  sqrt(Xs*Xs+Ys*Ys), dR = 1000*(Rr-Rs);
   // ***** FILL GLOBAL RESIDUALS
   Resids &rs = resHs[strip][idet];
   rs.X->Fill(dX); rs.Y->Fill(dY); rs.Z->Fill(dZ); rs.phi->Fill(dphi);
-  if (idet>=2) return true;
+  if (idet>=2) return 0x1<<strip;
   // ***** LOCAL RESIDUALS
   double XR, YR, ZR; wTol(idet,cellID,Xr,Yr,Zr,XR,YR,ZR); // Rec
   double XS, YS, ZS; wTol(idet,cellID,Xs,Ys,Zs,XS,YS,ZS); // Sim
@@ -550,7 +585,7 @@ bool recoEvents::fillResids(int idet, int ih, int ir)
   else {
     rs.R->Fill(dR);
   }
-  return true;
+  return 0x1<<strip;
 }
 bool recoEvents::borderRequirementOK(int idet, int ih)
 {
@@ -565,7 +600,7 @@ bool recoEvents::borderRequirementOK(int idet, int ih)
 unsigned int recoEvents::isOnBorder(int idet, unsigned long cellID,
 				    double Xs, double Ys, double Zs)
 {
-  // Is hit(<Xs,Ys,Zs>) on edge? I.e. w/in pitch/2 of edge
+  // Is hit(<Xs,Ys,Zs>) on border? I.e. w/in pitch/2 of edge
   // Return pattern of 1st and 2nd coord
   unsigned int onBorder = 0;
   unsigned int module, div, dummy; parseCellID(idet,cellID,module,div,dummy);
@@ -581,7 +616,20 @@ unsigned int recoEvents::isOnBorder(int idet, unsigned long cellID,
 	int staveType = getStaveType(0,cellID);
 	double radius = radii[0][staveType];    
 	double hWidth = hWidths[0][staveType], phiPitch = pitches[0][staveType]/radius;
-	if (phil<-hWidth+phiPitch/2 || phil>hWidth-phiPitch/2)
+	// - We have an alternative way to determine whether we're onBorder,
+	//  viz.: the # of raw hits. This because, when "MPGDTrackerDigi" (as
+	//  of 2026/07) itself finds we're onBorder, it creates a cluster of
+	//  size one instead of two. It turns out that the two alternatives at
+	//  times disagree. Meaning that something is not done exactly in
+	//  "recoEvents" and "MPGDTrackerDigi". Probably because distance to
+	//  border is evaluated in terms of length in one case and of angle in
+	//  the other case, and the radius involved in the business is not
+	//  exactly the same.
+	// => This disagreement would need to be investigated. For the time
+	//  being, let's introduce a margin. It's crudely tuned on instances
+	//  where !onBorder coincides w/ large residual.
+	const double margin = 0.001;
+	if (phil<-hWidth+phiPitch/2+margin || phil>hWidth-phiPitch/2-margin)
 	  onBorder |= 0x1<<strip;
       }
       else {
@@ -614,14 +662,15 @@ double recoEvents::getResCut(int idet, unsigned long cellID, int strip, bool onB
       int staveType = getStaveType(0,cellID);
       double radius = radii[0][staveType];
       double phiPitch = pitches[0][0]/radius;
-      resCut = onBorder ? 1000*phiPitch/2 : 3*resolutions[0]/radius; // in mrd
+      double resolution = resolutions[0][strip];
+      resCut = onBorder ? 1000*phiPitch/2 : 3*resolution/radius; // in mrd
     } else {
       double ZPitch = pitches[0][1];
-      resCut = onBorder ? ZPitch/2*1000 : 3*resolutions[0];
+      resCut = onBorder ? ZPitch/2*1000 : 3*resolutions[0][1];
     }
   } else {
     double pitch = pitches[1][0];
-    resCut = onBorder ? pitch/2*1000 : 3*resolutions[1];
+    resCut = onBorder ? pitch/2*1000 : 3*resolutions[1][0];
   }
   return resCut;
 }
@@ -684,7 +733,7 @@ void recoEvents::fillRawHit(int idet, int ir)
   RawHs &hs = rawHs[strip][idet];
   std::int16_t chN = strip==0 ? cellID>>32&0xffff : cellID>>48&0xffff;
   hs.chN->Fill(chN,module);
-  int section = 0; if (idet==0) section = module/8;
+  int section = 0; if (idet==0) section = module/nModules[0];
   else             if (idet==1) section = module%2;
   hs.ADC->Fill(raw.charge/gains[idet],section);
   hs.TDC->Fill(raw.timeStamp/1e3,section);
@@ -698,7 +747,7 @@ void recoEvents::parseCellID(int idet, unsigned long ID,
   // mpgd_outerbarrel.xml:     <id>system:8,layer:4,module:12, ...
   // mpgd_????ward_endcap.xml: <id>system:8,layer:2,module:6,
   // silicon_barrel.xml:       <id>system:8,layer:4,module:12, ...
-  // vertex_barrel.xml:        <id>system:8,layer:4,module:12, ...
+  // vertex_barrel.xml:        <id>system:8,layer:4,module:7,sensor:7 ...
   // system: CyMBaL = 61, Outer = 64, ... (It's not checked that this is what we get in "ID")
   module = (idet==2|| idet==3) ? ID>>10&0x3f : ID>>12&0xfff;
   // ***** divISION
@@ -728,7 +777,7 @@ void recoEvents::parseCellID(int idet, unsigned long ID,
     strip = 0; // Not relevant
   }
   else {
-    div = ID%2;
+    div = (ID-1)%2;
     strip = 0; // Not relevant
   }
 }
@@ -1286,8 +1335,8 @@ void recoEvents::printHit(int idet,
   if (verbose&0x10000) {
     printf(" 0x%08lx,0x%08x  %7.2f,%7.2f,%8.2f %7.2f cm %6.3fπ\n",
 	   cellID&0xfffffff,cell,X,Y,Z,R,phi/pi);
-    if      (idet==1) printf(" %5.1f 0x%02x 0x%x",phi/pi*12,module,module>>1);
-    else if (idet==0) printf(" %5.1f 0x%02x 0x%x",phi/pi*8, module,module>>1);
+    if      (idet==0 || idet==1)
+      printf(" %5.1f 0x%02x 0x%x",phi/pi*nModules[idet],module,module>>1);
   }
   else if (idet==2) {
     unsigned int layer = module&0xf, tile = module>>4;
