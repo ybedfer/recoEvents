@@ -161,14 +161,11 @@ void recoEvents::Loop(int nEvents, int firstEvent)
       // ********** ASSOCIATION: BUILD Rec/raw -> coa MAP
       if (!setXReferences(idet)) continue;
 
-      //#define DEBUG_CyMBaL
-#ifdef DEBUG_CyMBaL
-      // Which (event,module)'s have different numbers of phi and Z hits?
-      // (Turns out that they are from the edge, where CyMBaL has DeadZone.) 
-      typedef struct{ unsigned long modID; int nphisPerMod, nZsPerMod; }
-	RecData;
-      vector<RecData> recData;
-#endif
+      // Vector of RecHit Coincidences
+      // "moduleID" is volumeID stripped of its strip tag
+      typedef struct{ unsigned long moduleID; unsigned int pat; int iRX, iRY;  }
+	RecCoinc;
+      vector<RecCoinc> coincs;
       for (int iR = 0; iR<(int)recs[idet]->size(); iR++) {
 	// ********** LOOP ON Rec HITS
 	debugRec(idet,iR);
@@ -193,41 +190,39 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	      if (!(getStatusWord(cIndex)&0x2)) continue;
 	      // ***** FILL RESIDUAL
 	      unsigned int sRec = fillResids(idet,cIndex,iR);
-	      selecRec |= sRec;
-#ifdef DEBUG_CyMBaL
-	      if (idet==0 && sRec) { 
+	      selecRec |= sRec; // Remember "fillResids" status
+	      // ***** COINCIDENCE
+	      if (recHs[0][idet].XYr && // Not all "idet" have coinc. histos
+		  sRec) {
+		// Store RecCoinc info
 		const edm4eic::TrackerHitData &rec = recs[idet]->at(iR);
 		unsigned long recModID = rec.cellID&0x0fffffff;
-		RecData *curRD;
-		int iRD; for (iRD = 0, curRD = 0; iRD<(int)recData.size();
-			      iRD++) {
-		  RecData &rd = recData[iRD];
-		  if (rd.modID==recModID) { curRD = &rd; break; }
+		RecCoinc *curRC = 0;
+		for (int iRC = 0; iRC<(int)coincs.size(); iRC++) {
+		  RecCoinc &rc = coincs[iRC];
+		  if (rc.moduleID==recModID) { curRC = &rc; break; }
 		}
-		if (!curRD) {
-		  RecData rd; rd.modID = recModID; rd.nphisPerMod=rd.nZsPerMod = 0;
-		  recData.push_back(rd); curRD = &recData.back();
+		if (!curRC) {
+		  RecCoinc rc; rc.moduleID = recModID; rc.pat = 0; 
+		  coincs.push_back(rc); curRC = &coincs.back();
 		}
-		if      (sRec==0x1) curRD->nphisPerMod++;
-		else if (sRec==0x2) curRD->nZsPerMod++;
+		curRC->pat |= (curRC->pat&sRec) ? 0x4 /* Ambiguity */ : sRec;
+		if      (sRec==0x1) curRC->iRX = iR;
+		else if (sRec==0x2) curRC->iRY = iR;
 	      }
-#endif
 	    }
 	  }
-	  if (selecRec) {  // ***** FILL rec HISTOS
+	  if (selecRec) {  // ***** FILL RecHit HISTOS
 	    fillRecHit(idet,iR);
 	    debugRec(idet,iR);
 	  }
 	}
       }
-#ifdef DEBUG_CyMBaL
-      for (int iRD = 0; iRD<(int)recData.size(); iRD++) {
-	RecData &rd = recData[iRD];
-	if (rd.nphisPerMod!=rd.nZsPerMod)
-	  printf("++++ %5d, %d/%d,0x%08lx: #nphis = %d, nZs = %d\n",
-		 evtNum,iRD,(int)recData.size(),rd.modID,rd.nphisPerMod,rd.nZsPerMod);
+      // ***** FILL RecHit COINCIDENCES
+      for (int iRC = 0; iRC<(int)coincs.size(); iRC++) {
+	RecCoinc &RC = coincs[iRC]; if (RC.pat&0x4) continue;
+	fillRecCoinc(idet,RC.iRX,RC.iRY);
       }
-#endif
 
       if (!(0x1<<idet&stripMode)) // So far only strip detectors
 	continue;
@@ -445,7 +440,7 @@ void recoEvents::fillHit(int simOrRec, int idet,
   if (idet>=2) return;
 
   // ***** SPECIAL MPGDs: LOCAL (or REDUCED) VARIABLES 
-  double Xl, Yl, Zl; if (idet<2) wTol(idet,cellID,X,Y,Z,Xl,Yl,Zl,1);
+  double Xl, Yl, Zl; if (idet<2) wTol(idet,cellID,X,Y,Z,Xl,Yl,Zl);
 
   if      (idet==0) { // Special CyMBaL: fill reduced Radius
     double Rr = sqrt(Xl*Xl+Yl*Yl), phil = atan2(Yl,Xl);
@@ -587,6 +582,46 @@ unsigned int recoEvents::fillResids(int idet, int ih, int ir)
   }
   return 0x1<<strip;
 }
+void recoEvents::fillRecCoinc(int idet, int iRX, int iRY)
+{
+  edm4eic::TrackerHitData &recX = recs[idet]->at(iRX);
+  const Vector3f &posX = recX.position;
+  double XX = posX.x, YX = posX.y, ZX = posX.z;
+  edm4eic::TrackerHitData &recY = recs[idet]->at(iRY);
+  const Vector3f &posY = recY.position;
+  double XY = posY.x, YY = posY.y, ZY = posY.z;
+  // "moduleID" is volumeID stripped of its strip tag
+  unsigned long cellIDX = recX.cellID, moduleIDX = cellIDX&0x0fffffff;
+  unsigned long cellIDY = recX.cellID, moduleIDY = cellIDY&0x0fffffff;
+  // Checks
+  if (moduleIDY!=moduleIDX) {
+    printf("** fillRecCoinc: #%5d Inconsistency: moduleIDs differ: 0x%08lx != 0x%08lx\n",
+	   evtNum,moduleIDX,moduleIDY);
+    return;
+  }
+  if (idet>=2) {
+    printf("** fillRecCoinc: #%5d Inconsistency: arg. \"idet\" = %d >=2\n",
+	   evtNum,idet);
+    return;
+  }
+  // ***** LOCAL (or REDUCED) VARIABLES 
+  double XXl, YXl, ZXl; wTol(idet,cellIDX,XX,YX,ZX,XXl,YXl,ZXl);
+  double XYl, YYl, ZYl; wTol(idet,cellIDY,XY,YY,ZY,XYl,YYl,ZYl);
+  Histos *hs = &(recHs[0][idet]);
+  if      (idet==0) { // Special CyMBaL: fill reduced Radius
+    double phil = atan2(YXl,XXl);
+    hs->XYr->Fill(ZYl,getCyMBaLRadius(cellIDX)*phil);
+    double max = (nChannels[0][1]/2-0.5)*pitches[0][1];
+    if (ZYl<-max-.001 || ZYl>max+.001)
+      printf("+++++++++ #%5d,0x%08lx,0x%08lx,0x%08lx,0x%08lx: %6.1f/%5.1f/\n",evtNum,
+	     cellIDX&0xffffffff,cellIDX>>32,cellIDY&0xffffffff,cellIDY>>32,
+	     ZYl,max);
+  }
+  else if (idet==1) {
+    double UX = (YXl-XXl)/sqrt(2), VY = (YYl+XYl)/sqrt(2);
+    hs->XYr->Fill((UX+VY)/sqrt(2),(UX-VY)/sqrt(2));
+  }
+}
 bool recoEvents::borderRequirementOK(int idet, int ih)
 {
   if (!requireOffBorder) return true;
@@ -629,12 +664,15 @@ unsigned int recoEvents::isOnBorder(int idet, unsigned long cellID,
 	//  being, let's introduce a margin. It's crudely tuned on instances
 	//  where !onBorder coincides w/ large residual.
 	const double margin = 0.001;
+	// NOT HWIDTH!!
 	if (phil<-hWidth+phiPitch/2+margin || phil>hWidth-phiPitch/2-margin)
 	  onBorder |= 0x1<<strip;
       }
       else {
+	// NOT HLENGTH!!
+	const double margin = 0.001;
 	double hLength = ZHLengths[0], ZPitch = pitches[0][1];
-	if (Zl<-hLength+ZPitch/2 || Zl>hLength-ZPitch/2)
+	if (Zl<-hLength+ZPitch/2+margin || Zl>hLength-ZPitch/2-margin)
 	  onBorder |= 0x1<<strip;
       }
     }
@@ -2097,10 +2135,9 @@ double recoEvents::getCyMBaLRadius(unsigned long cellID)
   return radii[0][staveType];
 }
 bool recoEvents::wTol(int idet, unsigned long cellID, double X, double Y, double Z,
-		      double &Xr, double &Yr, double &Zr, int debug)
+		      double &Xr, double &Yr, double &Zr)
 {
   double gpos[3], lpos[3]; gpos[0] = X; gpos[1] = Y; gpos[2] = Z;
-  //printf("%d %.4f,%.4f,%.4f\n",debug,gpos[0],gpos[1],gpos[2]);
   if (!geo->WorldToLocal(idet,cellID,gpos,lpos)) {
     printf("FALSE\n");
     return false;
@@ -2110,7 +2147,7 @@ bool recoEvents::wTol(int idet, unsigned long cellID, double X, double Y, double
 }
 bool recoEvents::wTol(int idet, unsigned long cellID,
 		      double X,   double Y,   double Z,   double Px, double Py, double Pz,
-		      double &Xr, double &Yr, double &Zr, double *lmom, int debug)
+		      double &Xr, double &Yr, double &Zr, double *lmom)
 {
   double gpos[3], lpos[3]; gpos[0] = X;  gpos[1] = Y;  gpos[2] = Z;
   double gmom[3];          gmom[0] = Px; gmom[1] = Py; gmom[2] = Pz;

@@ -95,7 +95,7 @@ t->Scan("EventHeader.eventNumber:@OuterMPGDBarrelHits.size():OuterMPGDBarrelHits
 using namespace std;
 using namespace edm4hep;
 
-typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *R, *phi, *phir, *th, *mod, *thphi, *XY, *ZR, *Rr, *xyr, *Ur, *Vr, *eDep; }
+typedef struct{ TDirectory *dir; TH2D *X, *Y, *Z, *R, *phi, *phir, *th, *mod, *thphi, *XY, *ZR, *Rr, *xyr, *Ur, *Vr, *eDep, *XYr; }
   Histos;
 typedef struct{ TDirectory *dir; TH2D *chN, *ADC, *TDC; }
   RawHs;
@@ -233,6 +233,7 @@ public :
    // ***** FILLING
    void fillSimHit(int idet, int ih);
    void fillRecHit(int idet, int iR);
+   void fillRecCoinc(int idet, int iRX, int iRY);
    void fillRawHit(int idet, int ir);
    void fillHit(int iSimRec, int idet,
 		double X, double Y, double Z, double E, unsigned long cellID);
@@ -244,10 +245,10 @@ public :
    // ***** WORLD <-> LOCAL
    bool wTol(int idet, unsigned long cellID,
 	     double X,   double Y,   double Z,
-	     double &Xr, double &Yr, double &Zr, int debug = 0);
+	     double &Xr, double &Yr, double &Zr);
    bool wTol(int idet, unsigned long cellID,
 	     double X,   double Y,   double Z,   double Px, double Py, double Pz,
-	     double &Xr, double &Yr, double &Zr, double *lmom, int debug = 0);
+	     double &Xr, double &Yr, double &Zr, double *lmom);
    bool lTow(int idet, unsigned long cellID,
 	     double *lpos, double *gpos);
    // ***** COALESCING/EXTENDING
@@ -304,6 +305,7 @@ public :
    Histos simHs[N_DETs], recHs[2][N_DETs];
    RawHs  rawHs[2][N_DETs];
    Resids resHs[2][N_DETs];
+   // Lone histos
    TH1D *hMult;
    void DrawSimHit(int jentry, unsigned int detectorPattern, int ih,
 		   bool addToPreExisting = false);
@@ -627,7 +629,7 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     printf("** BookHistos: Inconsistency: Invalid <tag> arg.(=\"%s\"). Aborting...\n",tag);
     exit(1);
   }
-  bool isRec = tag[0]=='R';
+  bool isRec = tag[0]=='R', isRec0 = isRec && tag[1]=='0';
   // ***** STRIPS
   int iStrip = 0;
   if (!strcmp(tag,"R1")) iStrip = 2; // 2nd coordinate, for STRIPS
@@ -635,8 +637,10 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 
   // ***** BASE DIRECTORY
   TDirectory *dSave = gDirectory;
-  if (!isRec) // Only once
+  // General histos: only once (not associated to simHs nor recHs[2]
+  if (!isRec) {
     hMult = new TH1D("hMult","@MCParticles.size()",512,0,512);
+  }
 
   // ********** LOOP ON DETECTORS
   for (int idet = 0; idet<N_DETs; idet++) {
@@ -820,8 +824,20 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
     sT += string(hT); const char *hTXY = sT.c_str();
     hs.XY = new TH2D(hN,hTXY,256,-dX, dX,256,-dY,dY);
     if (isMPGD(idet) && isBarrel(idet)) { // Barrel MPGD: xyr = 2D in local coordinates
-      double xMx, yMx; string sT = string(dN); getxyArgs(isRec,idet,xMx,yMx,sT);
+      double xMx, yMx; string sT = string(dN);
+      getxyArgs(isRec,idet,xMx,yMx,sT);
       hs.xyr = new TH2D("hxyr",sT.c_str(),256,-xMx,xMx,256,-yMx,yMx);
+      if (isRec0) {
+	// 2D of coincinding RecHits => only once.
+	// Dimensions are those of simHs.
+	getxyArgs(0,idet,xMx,yMx,sT);
+	hs.XYr = new TH2D("hXYr",sT.c_str(),512,-xMx,xMx,512,-yMx,yMx);
+      }
+      else
+	hs.XYr = 0;
+    }
+    else {
+      hs.xyr=hs.XYr = 0;
     }
     snprintf(hN,lN,"%s%s",tag,"ZR");
     snprintf(hT,lT,"%s;#font[32]{%c}  #font[22]{(mm)}   ",dN,'Z');
@@ -956,21 +972,6 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
 	if (!(0x1&flags[ih])) continue;
 	setAxes(r1s[ih]->GetXaxis(),515,3); setAxes(r1s[ih]->GetYaxis(),505,3);
       }
-      /*
-      // ***** 2D HISTOS: residuals vs. (x,y)
-      if (idet==1) { // Only if Outer: xyr = 2D in local coordinates
-	// (The idea is to illustrate how the shape of the distribution of
-	// residuals along the non-measurement axis (typically asymmeric) arises
-	// from the dependence of the hit count upon Z.)
-	char coord = iStrip==1?'V':'U';
-	snprintf(hN,lN,"d%cxy",coord);
-	char sN[] = " - dU"; sprintf(sN," - d%c",coord);
-	string sT = string(dN); sT += string(sN);
-	double xMx, yMx; getxyArgs(idet,xMx,yMx,sT);
-	rs.xyr = new TProfile2D(hN,sT.c_str(),256,-xMx,xMx,256,-yMx,yMx);
-	setAxes(rs.xyr->GetXaxis(),505,3); setAxes(rs.xyr->GetYaxis(),505,3);
-      }
-      */
     }
   }
   dSave->cd();
@@ -987,8 +988,8 @@ void recoEvents::getxyArgs(bool isRec, int idet, double &xMx, double &yMx, strin
     sT += string(hT);
     snprintf(hT,lT,";R#font[32]{%s}r  #font[22]{(mm)}   ","#varphi");
     sT += string(hT); const char *hTxy = sT.c_str();
-    // Innner and outer sections do not yield the exact same Rphi range
-    // Let's take the max
+    // For CyMBaL_8S, innner and outer sections do not yield the exact same
+    // Rphi range. => Let's take the max.
     yMx = radii[0][0]*hWidths[0][0];
     xMx = ZHLengths[idet];
   } else if (idet==1) {
@@ -1696,4 +1697,29 @@ ana->DrawResiduals(1,0x1,0x6);
 ana->DrawResiduals(2,0x1,0x6,cCyMBaL2Res,3);
 ana->DrawResiduals(1,0x2,0x6);
 ana->DrawResiduals(2,0x2,0x6,cOuter2Res,3);
+*/
+/*
++++++++++ #  570,0x1000103d,0x00000036,0x1000103d,0x00000036: -293.9/293.5/
++++++++++ #  656,0x1000e03d,0x0000ffea,0x1000e03d,0x0000ffea:  294.8/293.5/
++++++++++ #  770,0x1000c03d,0x00000002,0x1000c03d,0x00000002: -294.4/293.5/
++++++++++ #  833,0x1000603d,0x00000037,0x1000603d,0x00000037: -293.8/293.5/
++++++++++ # 1158,0x1000c03d,0x00000006,0x1000c03d,0x00000006: -294.0/293.5/
++++++++++ # 1172,0x1001903d,0x0000ffde,0x1001903d,0x0000ffde:  294.3/293.5/
+
+events->Scan("EventHeader.eventNumber:@MPGDBarrelHits.size():MPGDBarrelHits.cellID&0xffffffff:MPGDBarrelHits.quality:MPGDBarrelHits.cellID>>32:MPGDBarrelHits.position.z:@MPGDBarrelRawHits.size():@MPGDBarrelRecHits.size():MPGDBarrelRecHits.cellID&0xffffffff:MPGDBarrelRecHits.cellID>>32:MPGDBarrelRecHits.position.z","@MPGDBarrelHits.size()","col=3d:2d:8llx:2d:8llx:6.2f:2d:2d:8llx:8llx:6.2f",1,570);
+
+***************************************************************************************************************
+*    Row   * Instance * Eve * @M * MPGDBarr * MP * MPGDBarr * MPGDBa * @M * @M * MPGDBarr * MPGDBarr * MPGDBa *
+***************************************************************************************************************
+*      570 *        0 * 570 *  1 * 3000103d *  0 * fdca00aa * -943.4 *  4 *  2 * 1000103d *       36 * -649.5 *
+*      570 *        1 *     *  1 *          *    *          *        *  4 *  2 * 2000103d * ffe30000 * -943.3 *
+***************************************************************************************************************
+***************************************************************************************************************
+*    Row   * Instance * Eve * @M * MPGDBarr * MP * MPGDBarr * MPGDBa * @M * @M * MPGDBarr * MPGDBarr * MPGDBa *
+***************************************************************************************************************
+*      656 *        0 * 656 *  1 * 3000e03d *  0 *  237ffbb * 196.75 *  4 *  2 * 1000e03d *     ffea * -98.00 *
+*      656 *        1 *     *  1 *          *    *          *        *  4 *  2 * 2000e03d *   1c0000 * 196.80 *
+***************************************************************************************************************
+
+
 */
