@@ -185,6 +185,7 @@ public :
    static constexpr int moduleMns[N_DETs] = { 0, 0, 1, 1,   1, 1};
    double volumeThicknesses[N_DETs];   // Overall thickness
    double radiatorThicknesses[N_DETs]; // Thickness of RADIATOR SUBVOLUME
+   double helperThicknesses[N_DETs];   // Thickness of HELPER SUBVOLUME
    vector<double> radii[N_DETs];      // in mm
    double ZAbscissae[N_DETs][2];
    int nSections[N_DETs];
@@ -192,6 +193,7 @@ public :
    int getStaveType(int idet, unsigned long cellID);
    vector<double> hWidths[N_DETs];    // HalfWidths
    double ZHLengths[N_DETs];          // HalfLengths
+   double hasDeadZone[N_DETs];        // DeadZone = hWidths-nChannels/2*pitch
    vector<double> pitches[N_DETs];    // pitch in mm
    double gains[N_DETs], eDThresholds[N_DETs];
    vector<double> resolutions[N_DETs];
@@ -209,6 +211,12 @@ public :
    int requirePDG;     // Associated MCParticle 
    int requireQuality; // "SimTrackerHit::quality". =1: reject modules where any secondary hit, >1: reject modules where more than one hit
    // ***** EDGE REQUIREMENT:
+   // DEADZONE:
+   // - 12-sector CyMBaL has a DeadZone all around (may turn to also be the
+   //  case of other detectors). => No (Raw|Rec)Hits associated to the SimHits
+   //  falling in this zone. => Resulting in some (Rec|Raw)/Sim inefficiency.
+   // - In order to work around that inefficiency, let's require OffDZ.
+   int requireOffDZ; // 0: Not required, <0: require InDZ instead. 
    // EDGE of READOUT (named here BORDER)
    // - Here, edge means: w/in half pitch of the extremum of the sensitive
    //  surface along the readout coordinates.
@@ -271,6 +279,8 @@ public :
    MCParticleData& getMCParticle(int idet, int ih);
    bool primaryRequirementOK(int ih);
    bool moduleRequirementOK(int idet, int ih);
+   bool DZRequirementOK(int idet, int ih);
+   bool woutDZ(int idet, const SimTrackerHitData &hit);
    bool edgeRequirementOK(int idet, int ih);
    bool crossEdge(int idet, const SimTrackerHitData &hit);
    bool borderRequirementOK(int idet, int ih);
@@ -369,6 +379,7 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
   for (int idet = 0; idet<N_DETs; idet++) requiredLayerModules[idet].init();
   requirePDG =       0; // Default: do not require any ID
   requireQuality =   0; // Default: do not require "SimTrackerHit::quality"
+  requireOffDZ =     0; // Default: do not require off DeadZone
   requireOffBorder = 0; // Default: do not require off border
   requireOffEdge =   0; // Default: do not require off edge
   stripMode = hasStrips;
@@ -394,7 +405,7 @@ recoEvents::recoEvents(TTree *tree, unsigned int detectors, unsigned int hasStri
   }
   parseGeometry();
   // => Derive CyMBaL's version: 8 or 12 sectors
-  isCyMBaL_8S = nModules[0]==8;
+  isCyMBaL_8S = nModules[0]==32;
   // Extra geometry parameters (including non-MPGD's) from built-in's
   for (int idet = 0; idet<N_DETs; idet++) {
     if (!(0x1<<idet&processedDetectors)) continue;
@@ -830,8 +841,40 @@ void recoEvents::BookHistos(Histos *Hs, const char* tag)
       if (isRec0) {
 	// 2D of coincinding RecHits => only once.
 	// Dimensions are those of simHs.
+	string sT(detectorNames[idet]);
 	getxyArgs(0,idet,xMx,yMx,sT);
-	hs.XYr = new TH2D("hXYr",sT.c_str(),512,-xMx,xMx,512,-yMx,yMx);
+	if (idet==0 && !isCyMBaL_8S) {
+	  double *XYbins[2]; int nXYbins[2];
+	  // Active area does not extend beyond centre of extreme strip, where
+	  // clusters cannot but have a single component hit. => then
+	  // necessarily positioned at the centre.
+	  for (int iXY = 0; iXY<2; iXY++) {
+	    int nChans = nChannels[idet][iXY];
+	    int nBins = nChans + 2 /* 1/2strip[+DeadZone] bins */; nXYbins[iXY] = nBins;
+	    double *&bins = XYbins[iXY]; bins = new double[nBins+1];
+	    bins[0] = iXY ? -xMx : - yMx; bins[nBins] = -bins[0];
+	    double pitch = iXY==0 && isCyMBaL_8S ? pitches[idet][iXY] * radii[0][0] : pitches[idet][iXY];
+	    double max = (nChans/2-0.5)*pitch+.0001; // Add some margin
+	    bins[1] = -max; bins[nBins-1] = max;
+	    double bin = bins[1]+pitch/2; // extreme 1/2strip
+	    for (int ibin = 2; ibin<=nBins-2; ibin++) {
+	      bins[ibin] = bin; bin += pitch; 
+	    }
+	  }
+	  /*
+	  for (int iXY = 0; iXY<2; iXY++) {
+	    printf("++++ %d,%d %d:",idet,iXY,nXYbins[iXY]);
+	    for (int i = 0; i<4; i++) printf(" %.4f",XYbins[iXY][i]);
+	    printf(" ... ");
+	    for (int i = 0; i<4; i++) printf(" %.4f",XYbins[iXY][nXYbins[iXY]-i]);
+	    printf("\n");
+	  }
+	  */
+	  hs.XYr = new TH2D("hXYr",sT.c_str(),nXYbins[1],XYbins[1],nXYbins[0],XYbins[0]);
+	}
+	else
+	  hs.XYr = new TH2D("hXYr",sT.c_str(),512,-xMx,xMx,512,-yMx,yMx);
+	setAxes(hs.XYr->GetXaxis(),505,3); setAxes(hs.XYr->GetYaxis(),505,3);
       }
       else
 	hs.XYr = 0;
@@ -1009,9 +1052,9 @@ void recoEvents::getxyArgs(bool isRec, int idet, double &xMx, double &yMx, strin
   }
   // Add a 25µ margin to make for imprecisions
   // - Don't know what they come from: l2g? extrapolation?
-  // - Turns out to be only needed form SimHits. Yet, in order to have same
+  // - Turns out to be only needed for SimHits. Yet, in order to have same
   //  binning for SimHits and RecHits...
-  xMx += .025; yMx += .025;
+  //xMx += .025; yMx += .025;
 }
 void recoEvents::BookRawHs(RawHs  *Hs, const char* tag)
 {
@@ -1670,8 +1713,9 @@ TFile *_file0 = TFile::Open("padio.2DS.20.1234.root");
 .L ~/eicA/recoEvents/install/librecoEvents.so 
 TTree *t = (TTree*)gDirectory->Get("events");
 // ***** PDG+PER-MODULE-UNIQUE
-recoEvents ana1(events,0x3f,0x3), *ana = &ana1;
+recoEvents ana1(events,0x3f), *ana = &ana1;
 ana->requirePDG = 13; ana->requireQuality = 2;
+ana->requireOffDZ = 1;
 ana->verbose = 0x3000;
 ana->Loop();
 ana->DrawphithZR(0,0x3f,0x1d,1);
@@ -1699,27 +1743,29 @@ ana->DrawResiduals(1,0x2,0x6);
 ana->DrawResiduals(2,0x2,0x6,cOuter2Res,3);
 */
 /*
-+++++++++ #  570,0x1000103d,0x00000036,0x1000103d,0x00000036: -293.9/293.5/
-+++++++++ #  656,0x1000e03d,0x0000ffea,0x1000e03d,0x0000ffea:  294.8/293.5/
-+++++++++ #  770,0x1000c03d,0x00000002,0x1000c03d,0x00000002: -294.4/293.5/
-+++++++++ #  833,0x1000603d,0x00000037,0x1000603d,0x00000037: -293.8/293.5/
-+++++++++ # 1158,0x1000c03d,0x00000006,0x1000c03d,0x00000006: -294.0/293.5/
-+++++++++ # 1172,0x1001903d,0x0000ffde,0x1001903d,0x0000ffde:  294.3/293.5/
-
-events->Scan("EventHeader.eventNumber:@MPGDBarrelHits.size():MPGDBarrelHits.cellID&0xffffffff:MPGDBarrelHits.quality:MPGDBarrelHits.cellID>>32:MPGDBarrelHits.position.z:@MPGDBarrelRawHits.size():@MPGDBarrelRecHits.size():MPGDBarrelRecHits.cellID&0xffffffff:MPGDBarrelRecHits.cellID>>32:MPGDBarrelRecHits.position.z","@MPGDBarrelHits.size()","col=3d:2d:8llx:2d:8llx:6.2f:2d:2d:8llx:8llx:6.2f",1,570);
-
-***************************************************************************************************************
-*    Row   * Instance * Eve * @M * MPGDBarr * MP * MPGDBarr * MPGDBa * @M * @M * MPGDBarr * MPGDBarr * MPGDBa *
-***************************************************************************************************************
-*      570 *        0 * 570 *  1 * 3000103d *  0 * fdca00aa * -943.4 *  4 *  2 * 1000103d *       36 * -649.5 *
-*      570 *        1 *     *  1 *          *    *          *        *  4 *  2 * 2000103d * ffe30000 * -943.3 *
-***************************************************************************************************************
-***************************************************************************************************************
-*    Row   * Instance * Eve * @M * MPGDBarr * MP * MPGDBarr * MPGDBa * @M * @M * MPGDBarr * MPGDBarr * MPGDBa *
-***************************************************************************************************************
-*      656 *        0 * 656 *  1 * 3000e03d *  0 *  237ffbb * 196.75 *  4 *  2 * 1000e03d *     ffea * -98.00 *
-*      656 *        1 *     *  1 *          *    *          *        *  4 *  2 * 2000e03d *   1c0000 * 196.80 *
-***************************************************************************************************************
-
-
+  // ***** DRAW hXYr UNDERLINING ITS DEADZONE
+  // (2,2) pads. (1,1) = 2D, w/ inset. (2,1) = ProjectionX. (1,2) = ProjectionY.
+  TCanvas *c = new TCanvas("cCyMBaLRphiZ","cCyMBaLRphiZ");
+  c->Divide(2,2);
+  TH2D *hXYr = ana->recHs[0][0].XYr;
+  c->cd(1); hXYr->Draw("col");
+  // 2D Layout
+  TAxis *ay = hXYr->GetYaxis(); ay->SetLabelSize(.055); ay->SetNdivisions(505);
+  SetPaveText(hXYr,0);
+  // Draw Inset
+  TAxis *ax; double xMn, xMx, x32, yMn, yMx, y32; int nBins;
+  TLine *tl = new TLine(); tl->SetLineColor(2);
+  ax = hXYr->GetXaxis(); xMn = ax->GetXmin(); xMx = ax->GetXmax(); nBins = ax->GetNbins(); 
+  x32 = xMn+(xMx-xMn)*32/nBins;
+  ay = hXYr->GetYaxis(); yMn = ay->GetXmin(); yMx = ay->GetXmax(); nBins = ay->GetNbins(); 
+  y32 = yMn+(yMx-yMn)*32/nBins;
+  tl->DrawLine(x32,yMn,x32,y32); tl->DrawLine(xMn,y32,x32,y32);
+  // Projections
+  TH1D *hp;
+  c->cd(3); hp = hXYr->ProjectionX(); hp->Draw(); SetPaveText(hp,0);
+  hp->SetLineColor(2); ax = hp->GetXaxis(); ax->SetRange(1,32); ax->SetNdivisions(505);
+  ay = hp->GetYaxis(); ay->SetLabelSize(.055); ay->SetLabelFont(62); ay->SetNdivisions(505);
+  c->cd(2); hp = hXYr->ProjectionY(); hp->Draw(); SetPaveText(hp,0);
+  hp->SetLineColor(2); ax = hp->GetXaxis(); ax->SetRange(1,32);
+  ay = hp->GetYaxis(); ay->SetLabelSize(.055); ay->SetLabelFont(62); ay->SetNdivisions(505);
 */

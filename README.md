@@ -6,6 +6,7 @@ red { color: #d02; font-family: monospace}
 
 ### Contents
  - [Installation](#installation)
+ - [Geometry file](#geometry-file)
  - [Usage](#usage)
    - [Loading](#load-shared-lib)
    - [Instantiate](#instantiate)
@@ -26,6 +27,18 @@ make
 make install
 ```
 
+### Geometry file
+The parameters of the detectors are retrieved from a `recoEvents.geometry.root` file.<BR>
+```
+ln -sf detector_geometry.2DStrip.root recoEvents.geometry.root
+```
+where the geometry file can be obtained, for any given configuration, with:
+
+```
+dd_web_display -o detector_geometry.2DStrip.root --export $DETECTOR_PATH/epic_craterlake_tracking_2DStrip.xml
+
+```
+
 ### Usage
  From the ROOT command line:
 
@@ -42,6 +55,10 @@ make install
 <red>`// - bit pattern: 0x1:CyMBaL, 0x2:Outer, 0x4: BECT, 0x8: FECT, 0x10:Vertex, 0x20:Si.`</red><BR>
 `recoEvents ana(events,0xf);`
 
+_The full constructor interface contains a `hasStrips` bit pattern:_<BR>
+`recoEvents(TTree *tree,unsigned int mode = 0xf, unsigned int hasStrips = 0x3);`<BR>
+_allowing to process data obtained w/ pixels, as opposed to 2DStrips._
+
 #### Loop on events:
 ```
 ana.Loop();
@@ -54,22 +71,34 @@ ana.Loop();
 `ana.DrawResiduals(0x1);`&nbsp;&nbsp;&nbsp; <red>// (RecHit-SimHit) residuals for 0x1:CyMBaL</red>
 
 `new TCanvas("c2D");`<BR>
-`ana.recHs[0].XY->Draw();` &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <red>// Draw Y vs. X for RecHits of [0]:CyMBal</red><BR>
+`ana.recHs[0].XY->Draw();` &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <red>// Draw Y vs. X for RecHits of [0]:CyMBaL</red><BR>
 `ana.simHs[4].ZR->Draw();` &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <red>// Draw R vs. Z for SimHits of [4]:Vertex</red><BR>
 `ana.rawHs[1][0].chN->Draw();` <red>// Draw RawHits for of [1]: 2nd coord of [0]:CyMBaL</red>
 
 #### Event control, debugging:
+A number of data members allow to process a subset of events, yielding a simplified picture:
+
+ - one and only one RecHit _per_ strip _per_ event.
+ - =&gt; yielding background-free (RecHit-SimHit) residual distributions.
+
+Deviations from the above simple situation are due to:
+
+ - Multi-particle events, which accumulate SimHits on a single readout channel,<BR>
+  &nbsp; yielding fewer RecHits and distorting their position.
+ - Bad quality hits (_e.g._ &delta; rays), which SimHit are not sitting on mid-plane.
+ - DeadZone (as of 2026/10, only for CyMBaL): no RecHit created.
 
 `ana.requirePDG = 13;`&nbsp;&nbsp;&nbsp;&nbsp; <red>// Require MCParticle = mu-</red><BR>
-`ana.requireQuality = 1;`                 <red>// !=0: Require primary w/o any interfering secondary in same mdoule.</red><BR>
+`ana.requireQuality = 1;`                 <red>// !=0: Require primary w/o any interfering secondary in same module.</red><BR>
 `ana.requireQuality = 2;`                 <red>// !=0: In addition, require single hit.</red><BR>
-`ana.verbose = 0x1111;`&nbsp;&nbsp;&nbsp; <red>// Debugging printout (1 for CyMBaL, 2 for Outer...)</red>
+`ana.requireOffDZ = 1;` &nbsp;            <red>// >0: Reject SimHits in DeadZone.</red><BR>
+`ana.verbose = 0x1111;`&nbsp;&nbsp; <red>// Debugging printout (1 for CyMBaL, 2 for Outer...)</red>
 
 `ana.select = new TTreeFormula("select", "@MCParticles.size()==1", events);` <red>// Add rejection cut</red>
 
 #### Subvolumes:
  - 5-SUBVOLUME is default. SimHits from MPGDs are coalesced alla MPGDTrackerDigi.
- - Enforce single-SUBVOLUIME:
+ - Enforce single-SUBVOLUME:
 
 `recoEvents ana(events,0xf,0x0);` <red>// Instantiate w/ no strips (_i.e._ w/ pixels) in CyMBaL and Outer</red><BR>
 `ana.SetNSensitiveSurfaces(1);` &nbsp;&nbsp; <red>// Overwrite default.</red>

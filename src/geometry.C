@@ -25,7 +25,9 @@ bool recoEvents::extraGeometry(int idet, bool hasStrips)
   radiatorThicknesses[idet] = 0;
   if (isMPGD(idet)) {
     if (hasStrips) {
-      const double radThickness = (3-3*.01)/2; // 3mm thickness-3*HELPER SUBVOLUMES
+      // Assuming 5-subVolume, 3 of which being helpers.
+      double hTh = helperThicknesses[idet];
+      const double radThickness = (3-3*hTh)/2; // 3mm thickness-3*HELPER SUBVOLUMES
       radiatorThicknesses[idet] = radThickness;
     }
   }
@@ -47,13 +49,25 @@ bool recoEvents::extraGeometry(int idet, bool hasStrips)
       nChannels[0].push_back(nStripsPhi); nChannels[0].push_back(nStripsZ);
     }
     else {
+      //<constant name="MMDeadZone"        value="1*mm"/>
       //<constant name="MMnStripsX"        value="192"/>
-      //<constant name="MMPitchX"          value="1.766*mm"/>
+      //<constant name="MMSizeStrX"        value="0.7*mm"/>
       //<constant name="MMnStripsY"        value="576"/>
-      //<constant name="MMPitchY"          value="1.021"/>
-      int nStripsPhi = 192, nStripsZ = 576;
-      nChannels[0].push_back(192); nChannels[0].push_back(576);
-      pitches[0].push_back(1.766); pitches[0].push_back(1.021);
+      //<constant name="MMSizeStrY"        value="0.9*mm"/>
+      double DZ = 1;
+      int nStripsPhi = 192; double sizeStrPhi = 0.7;
+      double rsensor = radii[0][0], hTh = helperThicknesses[0];
+      // Unfortunately, deriving pitch in phi requires the knowledge of the
+      // radius @ the PCB, which is available in "Geometry", but not easily
+      // accessible. For the time being, let's get this "r0" radius built-in.
+      //<constant name="MMModule_r0"                            value="565*mm"/>
+      double r0 = 565;
+      double pitchPhi = (2*hWidths[0][0]*r0-sizeStrPhi-2*DZ)/(nStripsPhi-1);
+      pitchPhi *= (radii[0][0]-helperThicknesses[0]) / r0;
+      int nStripsZ =   576; double sizeStrZ =   0.9;
+      double pitchZ =   (2*ZHLengths[0]      -sizeStrZ-2*DZ)/  (nStripsZ-  1);
+      nChannels[0].push_back(nStripsPhi); pitches[0].push_back(pitchPhi);
+      nChannels[0].push_back(nStripsZ);   pitches[0].push_back(pitchZ);
     }
   }
   else if (idet==1) {                    // ***** OUTER
@@ -104,10 +118,12 @@ bool recoEvents::extraGeometry(int idet, bool hasStrips)
 	//<constant name="MMumResolutionPhi"     value="260"/>
 	//<constant name="MMumResolutionZ"       value="150"/>
 	resolutions[0].push_back(260); resolutions[0].push_back(150); // in µm
+	hasDeadZone[0] = isCyMBaL_8S||!(stripMode&0x1) ? 0 : 1;
       }
     }
     else {
       resolutions[idet].push_back(150); // in µm
+      hasDeadZone[idet] = 0;
     }
   }
   else {
@@ -115,6 +131,7 @@ bool recoEvents::extraGeometry(int idet, bool hasStrips)
     //.threshold = 0.54 * dd4hep::keV, in "BVTX.cc","BTRK.cc"
     eDThresholds[idet] = .54;
     resolutions[idet].push_back(0); // Not yet set...
+    hasDeadZone[idet] = 0;
   }
   return true;
 }
@@ -216,15 +233,20 @@ bool recoEvents::parseGeometry()
 	    hWidths[mpgd].push_back(-startPhi);
 	    double rMin = tube->GetRmin()*10, rMax = tube->GetRmax()*10; // in mm
 	    double R = (rMin+rMax)/2; radii[mpgd].push_back(R);
+	    // The thickness of helper subVolume is originally 10µm. But it may
+	    // change.
+	    // => Let's get it from the geometry data. Simplifying assumption:
+	    //  All helper thicknesses are equal.
+	    helperThicknesses[mpgd] = rMax-rMin; 
 	    double dZ = tube->GetDz()*10; /* in mm */ ZHLengths[mpgd] = dZ;
 	  }
-	  double R = radii[mpgd][staveType], hW = hWidths[mpgd][staveType];
 	  // CyMBaL: Parse TGeoHMatrix
 	  double dZ = ZHLengths[mpgd];
 	  double Z = m.GetTranslation()[2]; Z += Z>0 ? +dZ : -dZ;
 	  if (Z<ZAbscissae[mpgd][0]) ZAbscissae[mpgd][0] = Z;
 	  if (Z>ZAbscissae[mpgd][1]) ZAbscissae[mpgd][1] = Z;
 	  /*
+	    double R = radii[mpgd][staveType], hW = hWidths[mpgd][staveType];
 	    printf("CyMBal: L,M %d,%-2d: hW %.4f rad. R %.3f Z [%.1f,%.1f] dZ %.1f G %.2f mm Stave %d/%d MpS %d\n",
 	    layer,module,hW,R,
 	    ZAbscissae[mpgd][0],ZAbscissae[mpgd][1],dZ,gap,
@@ -239,6 +261,8 @@ bool recoEvents::parseGeometry()
 	    double dX = box->GetDX()*10; hWidths[mpgd].push_back(dX);
 	    double dY = box->GetDY()*10; ZHLengths[mpgd] = dY;
 	    double dZ = box->GetDZ()*10;
+	    // Helper thickness (see comment supra, for CyMBaL)
+	    helperThicknesses[mpgd] = 2*dZ;
 	  }
 	  // Outer: Parse TGeoHMatrix
 	  double dY = ZHLengths[mpgd];
@@ -272,6 +296,7 @@ bool recoEvents::parseGeometry()
 	    double rMin = R-dZ, rMax = R+dZ;
 	    radii[mpgd].push_back(rMin); radii[mpgd].push_back(rMax);
 	  }
+	  helperThicknesses[mpgd] = 0; // No MultipleVolume yet.
 	  /*
 	    printf("Endcap: L,M %d,%-2d %.3f/%.3f %.3f R %.3f [%.3f,%.3f] Z [%.3f,%.3f] G %.2f mm Stave %d/%d <%s>\n",
 	    layer,module,dX1,dX2,dZ,R,R-dZ,R+dZ,

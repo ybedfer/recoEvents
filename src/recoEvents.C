@@ -148,6 +148,7 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	// ***** HIT SELECTION
 	if (!PDGRequirementOK(idet,ih)) continue;
 	if (!primaryRequirementOK(ih)) continue;
+	if (!DZRequirementOK(idet,ih)) continue;
 	if (!borderRequirementOK(idet,ih)) continue;
 	if (!edgeRequirementOK(idet,ih)) continue;
 	setStatusWord(ih);
@@ -173,8 +174,18 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	// ***** REFERENCE TO coa HIT
 	map<int,vector<int>,less<int>>::const_iterator im = Rec2coas.find(iR);
 	if (im==Rec2coas.end()) {
-	  printf("#%5d Warning: det %d: rec %d not associated\n",
-		 evtNum,idet,iR);
+#define WORK_AROUND_NOISE
+#ifdef WORK_AROUND_NOISE
+	  // With the advent of noise hits in SiBarrel[Vertex], some RecHits
+	  // cannot be associated w/ the present algorithm.
+	  // => Let's bypass the warning message
+	  bool doPrint = idet<4;
+#else
+	  bool doPrint = true;
+#endif
+	  if (doPrint)
+	    printf("#%5d Warning: det %d: rec %d not associated\n",
+		   evtNum,idet,iR);
 	}
 	else {
 	  const vector<int> &coas = im->second;
@@ -252,8 +263,8 @@ void recoEvents::Loop(int nEvents, int firstEvent)
 	  }
 	}
       }
-    }
-  }
+    } // End loop on detectors
+  } // End loop on events
 }
 unsigned int recoEvents::getSimHitStatus(int idet, int ih)
 {
@@ -337,7 +348,12 @@ bool recoEvents::setXReferences(int idet)
   int nArhs = arhs[idet]->size(); // Associations raw hit
   int nRecs = recs[idet]->size(); // Rec hits
   int nARhs = aRhs[idet]->size(); // Associations Rec Hit -> raw hit
-  if (!(nArhs||nAshs||nRecs)) return false;
+  // - There may be perfectly valid events w/o (Raw|Rec)Hits. E.g. when incident
+  //  particle falls into DeadZone.
+  // - And we may want to do some processing, ater the call to "setXReferences"
+  //  in those events.
+  // => Let's not exit upon "nRecs==0".
+  //if (!(nArhs||nAshs||nRecs)) return false;
   debugAssoc(idet);
   if (nAshs!=nArhs) {
     printf("Evt #%5d Warning: det %d: ash(%d)!=arh(%d)\n",
@@ -611,11 +627,6 @@ void recoEvents::fillRecCoinc(int idet, int iRX, int iRY)
   if      (idet==0) { // Special CyMBaL: fill reduced Radius
     double phil = atan2(YXl,XXl);
     hs->XYr->Fill(ZYl,getCyMBaLRadius(cellIDX)*phil);
-    double max = (nChannels[0][1]/2-0.5)*pitches[0][1];
-    if (ZYl<-max-.001 || ZYl>max+.001)
-      printf("+++++++++ #%5d,0x%08lx,0x%08lx,0x%08lx,0x%08lx: %6.1f/%5.1f/\n",evtNum,
-	     cellIDX&0xffffffff,cellIDX>>32,cellIDY&0xffffffff,cellIDY>>32,
-	     ZYl,max);
   }
   else if (idet==1) {
     double UX = (YXl-XXl)/sqrt(2), VY = (YYl+XYl)/sqrt(2);
@@ -641,38 +652,20 @@ unsigned int recoEvents::isOnBorder(int idet, unsigned long cellID,
   unsigned int module, div, dummy; parseCellID(idet,cellID,module,div,dummy);
 
   double Xl, Yl, Zl; if (idet<2) wTol(idet,cellID,Xs,Ys,Zs,Xl,Yl,Zl);
-  
+
   if (idet==0) {
     // ***** GLOBAL -> LOCAL
-    double phil = atan2(Yl,Xl);
     for (int strip = 0; strip<2; strip++) {
+      double max = (nChannels[idet][strip]/2-0.5)*pitches[idet][strip];
       if (strip==0) {
-	//int section = module/8; int staveType = (section==1 || section==2)?0:1;
 	int staveType = getStaveType(0,cellID);
-	double radius = radii[0][staveType];    
-	double hWidth = hWidths[0][staveType], phiPitch = pitches[0][staveType]/radius;
-	// - We have an alternative way to determine whether we're onBorder,
-	//  viz.: the # of raw hits. This because, when "MPGDTrackerDigi" (as
-	//  of 2026/07) itself finds we're onBorder, it creates a cluster of
-	//  size one instead of two. It turns out that the two alternatives at
-	//  times disagree. Meaning that something is not done exactly in
-	//  "recoEvents" and "MPGDTrackerDigi". Probably because distance to
-	//  border is evaluated in terms of length in one case and of angle in
-	//  the other case, and the radius involved in the business is not
-	//  exactly the same.
-	// => This disagreement would need to be investigated. For the time
-	//  being, let's introduce a margin. It's crudely tuned on instances
-	//  where !onBorder coincides w/ large residual.
-	const double margin = 0.001;
-	// NOT HWIDTH!!
-	if (phil<-hWidth+phiPitch/2+margin || phil>hWidth-phiPitch/2-margin)
+	double radius = radii[0][staveType]-helperThicknesses[0];
+	double phil = atan2(Yl,Xl), Rphil = phil*radius;
+	if (Rphil<-max || max<Rphil)
 	  onBorder |= 0x1<<strip;
       }
       else {
-	// NOT HLENGTH!!
-	const double margin = 0.001;
-	double hLength = ZHLengths[0], ZPitch = pitches[0][1];
-	if (Zl<-hLength+ZPitch/2+margin || Zl>hLength-ZPitch/2-margin)
+	if (Zl<-max || max<Zl)
 	  onBorder |= 0x1<<strip;
       }
     }
@@ -680,13 +673,12 @@ unsigned int recoEvents::isOnBorder(int idet, unsigned long cellID,
     double Vl = (Yl+Xl)/sqrt(2), Ul = (Yl-Xl)/sqrt(2);
     for (int strip = 0; strip<2; strip++) {
       double W = strip==0 ? Ul : Vl;
-      double hWidth = hWidths[1][0], hLength = ZHLengths[1];
-      double hSpan = (hWidth+hLength)/sqrt(2), pitch = pitches[1][0]/1000;
-      if (W<-hSpan+pitch/2 || W>hSpan-pitch/2)
-	  onBorder |= 0x1<<strip;
+      double max = (nChannels[idet][strip]/2-0.5)*pitches[idet][0];
+      if (W<-max || max<W)
+	onBorder |= 0x1<<strip;
     }
   }
-  //else: nothing done for non-MPGDs
+  //else: nothing done for non Barrel-MPGDs
   return onBorder;
 }
 double recoEvents::getResCut(int idet, unsigned long cellID, int strip, bool onBorder)
@@ -698,8 +690,8 @@ double recoEvents::getResCut(int idet, unsigned long cellID, int strip, bool onB
     if (strip==0) {
       //int section = module/8; int staveType = (section==1 || section==2)?0:1;
       int staveType = getStaveType(0,cellID);
-      double radius = radii[0][staveType];
-      double phiPitch = pitches[0][0]/radius;
+      double radius = radii[0][staveType]-helperThicknesses[0];
+      double phiPitch = isCyMBaL_8S ? pitches[0][0] : pitches[0][0]/radius;
       double resolution = resolutions[0][strip];
       resCut = onBorder ? 1000*phiPitch/2 : 3*resolution/radius; // in mrd
     } else {
@@ -711,6 +703,46 @@ double recoEvents::getResCut(int idet, unsigned long cellID, int strip, bool onB
     resCut = onBorder ? pitch/2*1000 : 3*resolutions[1][0];
   }
   return resCut;
+}
+bool recoEvents::DZRequirementOK(int idet, int ih)
+{
+  if (!requireOffDZ) return true;
+  const SimTrackerHitData &hit = coalescedHs[ih];
+  bool wout = woutDZ(idet,hit);
+  if (requireOffDZ>0) return wout;
+  else                return !wout;
+}
+bool recoEvents::woutDZ(int idet, const SimTrackerHitData &hit)
+{
+  if (!hasDeadZone[idet]) return true;
+  if (idet==0 && isCyMBaL_8S || idet!=0) {
+    printf("** woutDZ: DeadZone is provided for 12-sector CyMBaL.");
+    if (idet!=0) printf(" idet=0.");
+    else         printf(" 8-sector CyMBaL.");
+    printf(" => Exit...\n");
+    exit(1);
+  }
+  unsigned long cID = hit.cellID;
+  const Vector3d &pos = hit.position;
+  double X = pos.x, Y = pos.y, Z = pos.z;
+  double Xl, Yl, Zl; wTol(idet,cID,X,Y,Z,Xl,Yl,Zl);
+  for (int iXY = 0; iXY<2; iXY++) {
+    int nChans = nChannels[idet][iXY];
+    double pitch = pitches[idet][iXY];
+    double pos; if (iXY==0) {
+      double radius = radii[idet][0];//-helperThicknesses[0];
+      pos = atan2(Yl,Xl)*radius;
+    }
+    else
+      pos = Zl;
+    double max = nChans/2*pitch;
+    if (evtNum==evtToDebug) {
+      double radius = radii[idet][0];//helperThicknesses[0];
+      printf("+++ #%-5d,%d %f %f (%f,%f)\n",evtNum,iXY,pos,max,pitch,radius);
+    }
+    if (fabs(pos)>max) return false;
+  }
+  return true;
 }
 bool recoEvents::edgeRequirementOK(int idet, int ih)
 {
